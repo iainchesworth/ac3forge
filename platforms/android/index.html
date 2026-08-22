@@ -1,0 +1,3264 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23">
+      
+      
+      
+        <link rel="canonical" href="https://iainchesworthlabs.github.io/ac3forge/platforms/android/">
+      
+      
+        <link rel="prev" href="../macos/">
+      
+      
+        <link rel="next" href="../wasm/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Android (NVIDIA Shield) - ac3forge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#android-nvidia-shield" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="ac3forge" class="md-header__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ac3forge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Android (NVIDIA Shield)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../concepts/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../verification/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Validation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../library/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cli/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  CLI reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../gui/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  GUI guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="ac3forge" class="md-nav__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ac3forge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../raspberry-pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Raspberry Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-reused-whats-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's reused, what's new
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toolchain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Toolchain
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-backend-aaudio-for-monitor-jni-bridged-audiotrack-for-passthrough" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio backend: AAudio for monitor, JNI-bridged AudioTrack for passthrough
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time performance: RelWithDebInfo, and a real MDCT bug it uncovered
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objects: one interactive lead, two ambient, all on pre-planned orbits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#input-shield-controller-and-basic-remote-both" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input: Shield Controller and basic remote, both
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Visualization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hdmi-receiver-resilience-waiting-not-crashing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HDMI receiver resilience: waiting, not crashing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#object-signing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Object signing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-and-running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building and running
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#release-ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Release / CI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-has-and-has-not-been-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What has and has not been verified
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wasm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebAssembly (browser demo)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/ac3-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AC-3 & E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/atmos-joc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Atmos & JOC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/object-signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../library/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Library
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/encoding-ac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/encoding-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/decoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/spatial-and-atmos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spatial & Atmos objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/station-broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A worked scene — station broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/channel-plans-and-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel plans & routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/muxing-and-sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Muxing & sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/file-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/adm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM / BW64 reading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/adm-bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM → Atmos bridging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/header-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Header map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/c-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../cli/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/metadata-options/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../gui/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GUI guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/loading-a-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Loading a source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/format-and-channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Format & channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/objects-and-motion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objects & motion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/live-session/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/source-assignment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-source & assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/coding-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/qc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QC a stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/inspect-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../wasm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live decode demo (WASM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quality-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tool-comparison-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool comparison trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../landscape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci-self-hosted-runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Self-hosted CI runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-reused-whats-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's reused, what's new
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toolchain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Toolchain
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-backend-aaudio-for-monitor-jni-bridged-audiotrack-for-passthrough" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio backend: AAudio for monitor, JNI-bridged AudioTrack for passthrough
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time performance: RelWithDebInfo, and a real MDCT bug it uncovered
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objects: one interactive lead, two ambient, all on pre-planned orbits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#input-shield-controller-and-basic-remote-both" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input: Shield Controller and basic remote, both
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Visualization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hdmi-receiver-resilience-waiting-not-crashing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HDMI receiver resilience: waiting, not crashing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#object-signing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Object signing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-and-running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building and running
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#release-ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Release / CI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-has-and-has-not-been-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What has and has not been verified
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="android-nvidia-shield">Android (NVIDIA Shield)<a class="headerlink" href="#android-nvidia-shield" title="Permanent link">&para;</a></h1>
+<p>Android support is not <code>ac3cli</code>/<code>ac3gui</code> ported to a phone — it is a separate, small,
+Shield-specific demo app, <strong>Shield Atmos Demo</strong> (<code>apps/android/</code>), that plays a real Atmos/JOC
+stream out through the Shield's HDMI passthrough output to an AV receiver, with a controller or
+remote moving one of a few objects around the room live. It exists to prove the encoder's object
+audio audibly moves in 3D space on real consumer hardware, not to be a general-purpose encoding
+tool. This page covers what is specific to Android; for the core library and the desktop
+platforms, see <a href="../../building/">Building from source</a> and the other pages in this section.</p>
+<p>Distribution is <strong>personal sideload only, via <code>adb install</code> — never the Play Store</strong>. That is a
+deliberate choice, not a placeholder: the app can be built with <a href="#object-signing">object signing</a>
+enabled, and that build (which carries the key) must never leave the user's own device (see below).</p>
+<p><img alt="Live dashboard: 3D trail view, top-down and elevation panels, speaker-activity meter" src="../screenshots/android-dashboard.png" /></p>
+<h2 id="build-and-run">Build and run<a class="headerlink" href="#build-and-run" title="Permanent link">&para;</a></h2>
+<p>An Android SDK with <strong>NDK 26.1.10909125</strong> and <strong>CMake 3.31.6</strong> installed (<code>local.properties</code> →
+<code>sdk.dir</code>), plus a Shield TV reachable over the network or USB:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>apps/android
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>./gradlew<span class="w"> </span>assembleDebug<span class="w"> </span>--no-daemon
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>adb<span class="w"> </span>connect<span class="w"> </span>&lt;shield-ip&gt;:5555<span class="w">          </span><span class="c1"># if not on USB</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>adb<span class="w"> </span>-s<span class="w"> </span>&lt;shield-ip&gt;:5555<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>app/build/outputs/apk/debug/app-debug.apk
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>adb<span class="w"> </span>-s<span class="w"> </span>&lt;shield-ip&gt;:5555<span class="w"> </span>shell<span class="w"> </span>am<span class="w"> </span>start<span class="w"> </span>-n<span class="w"> </span>com.ac3forge.shield/.MainActivity
+</code></pre></div>
+<p><a href="#building-and-running">Building and running</a> below covers the SDK setup and signed builds.</p>
+<h2 id="whats-reused-whats-new">What's reused, what's new<a class="headerlink" href="#whats-reused-whats-new" title="Permanent link">&para;</a></h2>
+<p><code>ac3::forge</code> (<code>src/forge/</code>) — the codec, <code>AtmosEncoder</code>, IEC 61937 framing — is fully
+platform-independent and is linked into the app <strong>unmodified</strong>, via a thin wrapper
+<code>CMakeLists.txt</code> (<code>apps/android/app/src/main/cpp/CMakeLists.txt</code>) that <code>add_subdirectory()</code>s
+the real repo root rather than duplicating its target definitions. <code>ac3::audio</code> (<code>src/audio/</code>)
+gains a fifth backend, <code>src/audio/src/backend/android/</code>, alongside <code>windows</code>/<code>alsa</code>/
+<code>posix</code>/<code>macos</code>, selected by CMake's own <code>ANDROID</code> variable (set by the NDK toolchain file, a peer check
+to the existing <code>WIN32</code>/<code>LINUX</code>/<code>APPLE</code> blocks in <code>src/audio/CMakeLists.txt</code>) — no <code>#ifdef</code>
+anywhere, per the project's
+<a href="../raspberry-pi/#why-theres-no-raspberry-pi-specific-code">platform-tree convention</a>.</p>
+<p>Everything else — the Gradle app shell, the JNI bridge, the live encode loop, input handling, the
+room visualization — is new and lives entirely under <code>apps/android/</code>, outside the CMake
+project the desktop tools build from.</p>
+<h2 id="toolchain">Toolchain<a class="headerlink" href="#toolchain" title="Permanent link">&para;</a></h2>
+<p><strong>NDK r26.1.10909125</strong>, pinned explicitly in <code>app/build.gradle.kts</code> rather than left to "whichever
+NDK Gradle resolves" — a build failure should mean something changed, not that a different NDK got
+silently picked. CMake <strong>3.31.6</strong> (the closest available match in the SDK manager's package
+repository to the root project's declared <code>3.28...4.3</code> range; there is no 3.28.x package for
+Android). <code>ANDROID_STL=c++_shared</code> — the app's <code>ac3::forge</code>/<code>ac3::audio</code> are static libraries
+linked into one shared object (<code>ac3forge_jni.so</code>), and a static STL would duplicate global state
+(locale, iostream init) if anything else in the process ever pulled in libc++ too.</p>
+<p>The r26 pin also reaches into the library itself: r26's bundled libc++ does not implement
+<code>&lt;format&gt;</code>, so shared library code avoids it outright — <code>src/forge/src/version.cpp</code> builds its
+version string by plain concatenation and cites this page for why.</p>
+<p><code>minSdk = 26</code> (Oreo) is a hard floor, not a target: <code>monitor.cpp</code> depends on AAudio outright, which
+does not exist below API 26, and there is no fallback path. Real Shield TV hardware (2017 model
+onward) ships well above this. Only <code>arm64-v8a</code> is built — every real Shield TV is arm64, and
+building the other ABIs would only slow local iteration for targets that can never run the app.</p>
+<h2 id="audio-backend-aaudio-for-monitor-jni-bridged-audiotrack-for-passthrough">Audio backend: AAudio for monitor, JNI-bridged <code>AudioTrack</code> for passthrough<a class="headerlink" href="#audio-backend-aaudio-for-monitor-jni-bridged-audiotrack-for-passthrough" title="Permanent link">&para;</a></h2>
+<p>The original plan for this app was "native AAudio engine … using the existing IEC 61937
+encapsulation" throughout. That premise turned out to be only half right, and is worth stating
+explicitly so it is not rediscovered:</p>
+<div class="admonition warning">
+<p class="admonition-title">AAudio has no compressed/bitstream passthrough support at all</p>
+<p>The NDK's AAudio API is PCM-only — confirmed against Oboe's own maintainers' guidance, not
+assumed. There is no AAudio call that hands a pre-framed IEC 61937 burst to an HDMI output and
+asks the receiver to decode it as Dolby Digital/Digital Plus. <strong>Every real Android passthrough
+implementation</strong> — Kodi's <code>AESinkAUDIOTRACK.cpp</code>, ExoPlayer's passthrough path — bypasses any
+native/codec API entirely and writes encoded, already-wrapped bursts into a <strong>Java</strong>
+<code>android.media.AudioTrack</code>, opened with a compressed encoding
+(<code>AudioFormat.ENCODING_E_AC3</code>/<code>ENCODING_IEC61937</code> — see below). This app does the same thing,
+just with a modern zero-copy JNI bridge instead of Kodi's older heap-array wrap.</p>
+<p><code>AMediaCodec</code> (the NDK's native codec API) was considered and rejected for the same reason: it
+is a <em>decode/encode</em> pipeline API, with no mode for "inject an already-encoded bitstream
+verbatim onto passthrough output."</p>
+</div>
+<p>So the backend is genuinely split, unlike the other three:</p>
+<ul>
+<li><strong><code>monitor.cpp</code></strong> — real AAudio (<code>AAudioStreamBuilder</code>, PCM float), for local preview. This is
+  exactly what AAudio is good at, and the only place in this backend that uses it.</li>
+<li><strong><code>passthrough.cpp</code></strong> — a JNI shim implementing <code>ac3::audio::PassthroughSink</code>. <code>submit()</code> hands
+  each burst to a Kotlin-owned <code>AudioTrack</code> via a small round-robin pool of buffers wrapped once
+  with <code>env-&gt;NewDirectByteBuffer(...)</code> and promoted to a <code>GlobalRef</code> at startup — one <code>memcpy</code> into
+  a native buffer per burst, zero further copies, no per-frame <code>NewDirectByteBuffer</code>/GC churn.
+  Kotlin's <code>PassthroughBridge.kt</code> opens the <code>AudioTrack</code> with <code>ENCODING_IEC61937</code> (bursts arrive
+  already framed — <code>ENCODING_E_AC3</code> would make Android re-wrap already-wrapped frames) and writes
+  with <code>WRITE_BLOCKING</code>.</li>
+<li><strong><code>capture.cpp</code></strong> — a no-op stub, mirroring the <code>posix</code> backend's "no backend" shape. This app
+  has no microphone/loopback feature to serve.</li>
+<li><strong><code>audio_backend.cpp</code></strong> — reports <code>capture.available=false</code> unconditionally; <code>passthrough</code> and
+  <code>monitor</code> availability come from a one-time capability probe at startup
+  (<code>AudioTrack.isDirectPlaybackSupported</code>/<code>isPcmSupported</code>, called separately per format since
+  AC-3 and E-AC-3 need different carrier rates — see <code>carrier_rate()</code> in <code>android_support.hpp</code>),
+  not from a static claim.</li>
+</ul>
+<h2 id="real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered">Real-time performance: <code>RelWithDebInfo</code>, and a real MDCT bug it uncovered<a class="headerlink" href="#real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered" title="Permanent link">&para;</a></h2>
+<p>AGP's default for the <code>debug</code> build type is <code>CMAKE_BUILD_TYPE=Debug</code> (<code>-O0</code>). That is fine for
+<code>jni_entry.cpp</code>'s smoke tests but nowhere near real-time for <code>live_cursor.cpp</code>'s actual per-frame
+work (<code>AtmosEncoder::encode_frame</code>'s MDCT/bit-allocation/JOC matrix, once every 32ms). Confirmed on
+this Shield's Tegra X1: <code>-O0</code> took <strong>~425ms/frame</strong>, over 13x the budget — bursts arrived in huge
+sparse gaps instead of a steady stream, which is exactly why the receiver's HDMI link stayed
+flashing (video locked, audio never did). <code>app/build.gradle.kts</code>'s <code>debug</code> build type now overrides
+this to <code>-DCMAKE_BUILD_TYPE=RelWithDebInfo</code>, which keeps the APK debuggable (<code>isDebuggable</code> stays
+on, no separate release signing needed to <code>adb install</code>) while actually optimizing the native side.</p>
+<p>That override alone only bought back ~1.6x — nowhere near enough. Profiling with
+<a href="https://github.com/wolfpld/tracy">Tracy</a> (<code>vcpkg</code>'s <code>profiling</code> manifest feature,
+<code>AC3FORGE_ENABLE_TRACY</code>) traced the remaining gap to <code>mdct_forward_core</code>: it recomputed <code>std::cos()</code>
+fresh, every iteration, inside an O(N²) loop, while the <em>inverse</em> transform right next to it already
+used a precomputed table. Fixing the forward transform to do the same (<code>ForwardCosTable</code> in
+<code>src/forge/src/core/mdct.cpp</code>) gave a further ~3.8x — this is a real library-level fix, verified
+bit-exact against the full test suite, not an Android-specific workaround, and it benefits every
+platform's Atmos encode path. With both fixes, the Shield holds an exact 32.0ms/frame cadence with
+zero underruns. See <a href="../../performance-trend/">Performance trend</a> for the CI regression gate this
+bug prompted (<code>tests/performance/</code>'s hard real-time gate plus the <code>ac3bench</code> trend tracker).</p>
+<h2 id="objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits">Objects: one interactive lead, two ambient, all on pre-planned orbits<a class="headerlink" href="#objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits" title="Permanent link">&para;</a></h2>
+<p><code>live_cursor.cpp</code> no longer holds a single object at a fixed point. Every object
+(<code>kInteractiveObjects</code> + <code>kAmbientObjects</code>, currently 1 + 2) follows its own closed-form orbit —
+<code>trajectory_position()</code>, a circle in the room's x/y plane centred on the room's <em>exact</em> middle
+(<code>(0.5, 0.5)</code>, per <code>oamd.hpp</code> — also where the JOC/VBAP render implicitly assumes the listener
+sits) with an independent, slower height bob — so every object's lap carries it both in front of
+and behind the listening position, not confined to the front half of the room. Rate/phase/radius
+differ per object (<code>kTrajectory</code>) so the three stay visually and audibly distinct.</p>
+<p>The two ambient objects (a major third and a perfect fifth above the lead's A4, forming an A major
+triad rather than an arbitrary tone set — <code>kToneHz</code>/<code>kToneGain</code>) are <strong>never touched by input</strong> —
+they exist purely so the demo has more than one voice to show sound mixing/interaction between.
+Only the lead is driven by <a href="#input-shield-controller-and-basic-remote-both">Input</a> below.</p>
+<p><strong>The lead's own voice is a bundled, seamlessly-looping sample, not a bare tone.</strong> A plain sine,
+however correctly panned, gives the ear almost nothing to localize by — no onset transient for
+azimuth (interaural time/level difference) cues, and no high-frequency content at all for the
+pinna-filtered spectral cues elevation localization actually relies on; real-device testing
+confirmed it as "muddy," not a discrete point source. <code>assets/lead_voice_48k_mono_s16le.raw</code> (a
+layered rotor-thump/tail-rotor/engine-drone/blade-slap mix, generated offline via FFT-based
+spectral synthesis — random phase per frequency bin at exact multiples of <code>1/duration</code>, so the
+inverse-FFT result is naturally periodic with no click at the loop seam) is loaded once at startup
+through <code>AAssetManager</code> and looped sample-by-sample through the same <code>tone_gain</code>/distance-falloff/
+soft-limiter chain every object's voice passes through. Missing the asset (an older build, or a
+packaging issue) is not fatal: <code>live_cursor.cpp</code> falls back to a live-synthesized rotor-envelope
+tone+noise mix instead of silence.</p>
+<p><strong>Distance-based loudness falloff.</strong> Without it, an object sounded exactly as loud swinging past the
+listener at the room's centre as it did out at the far edge of its own orbit — correct panning
+direction, but no sense of "coming toward me" versus "far away." An inverse-square-ish falloff
+(<code>distance_attenuation()</code>, clamped with a floor so the far end of an orbit is quieter but never
+silent — fully silent would fight the pause/mute isolation feature's own point) is applied as an
+extra per-object, per-frame gain multiplier, computed from that frame's own placement.</p>
+<h2 id="input-shield-controller-and-basic-remote-both">Input: Shield Controller and basic remote, both<a class="headerlink" href="#input-shield-controller-and-basic-remote-both" title="Permanent link">&para;</a></h2>
+<p><code>InputController.kt</code> supports both devices this app is meant to run under, detected at the event
+level rather than requiring the user to pick a mode. Every input source <strong>biases the lead object
+off its own trajectory</strong> rather than moving it outright (<code>NativeBridge.nativeDeflectSelectedObject</code>
+→ <code>LiveCursorState::deflect_selected</code>, clamped to a bounding box around the trajectory) — release
+the input and <code>LiveCursorState::advance()</code> decays that bias back toward zero every encode frame
+(<code>kDeflectionDecayPerFrame</code>, an exp(-t/1.5s) time constant) whether or not any more input arrives,
+so the object drifts back onto its planned course on its own rather than needing an explicit
+"input stopped" signal from Kotlin.</p>
+<ul>
+<li><strong>Shield Controller</strong> (<code>SOURCE_JOYSTICK</code>): both analog sticks, read in <code>onGenericMotionEvent</code>
+  with a 0.15 deadzone, driving continuous deflection scaled by elapsed time via a
+  <code>Choreographer.FrameCallback</code> ticker — held-stick input biases smoothly, not per-event-stepped.
+  <code>L1</code>/<code>R1</code> add continuous height deflection independent of the D-pad's axis mode below.</li>
+<li><strong>D-pad</strong> (present on both the Controller and the basic remote): now held-continuous rather than
+  one-shot-per-press, unified into the same per-frame ticker as the analog sticks. Left/right
+  always biases x; up/down biases <strong>either</strong> y (further into/out of the room) <strong>or</strong> z (height),
+  depending on <code>axisMode</code> — the remote's only way to reach height at all, since it has no second
+  stick or shoulder buttons.</li>
+<li><strong>Axis-mode toggle</strong>: a <strong>short press</strong> of D-pad-center/Enter/A (<code>onKeyUp</code>, only fires if the
+  long-press branch below didn't already consume the press) flips <code>axisMode</code> between X/Y and X/Z —
+  deliberately immediate, not gated behind a hold, since real-device testing found a long-press-to-
+  switch felt sluggish for something that needs switching back and forth rapidly while actively
+  shaping a path. The top-down panel's header shows the current mode live (<code>D-PAD → DEPTH</code>/<code>D-PAD →
+  HEIGHT</code>).</li>
+<li><strong>Snap back to course</strong>: a <strong>long press</strong> of the same key (<code>onKeyLongPress</code>) instantly zeroes the
+  selected object's deflection instead of waiting out the usual ~1.5s spring-back decay — a
+  presenter's "and… reset" button. Replaced what used to be here (cycling the selected object, a
+  no-op with only one interactive object).</li>
+</ul>
+<p>Either way, input is coalesced to <strong>at most one JNI call per animation frame</strong>, never per raw input
+event — the native side (<code>live_cursor.cpp</code>'s <code>LiveCursorState</code>, mutex-protected) advances once per
+encode frame, independent of how often Kotlin's ticker calls in.</p>
+<h2 id="visualization">Visualization<a class="headerlink" href="#visualization" title="Permanent link">&para;</a></h2>
+<p><code>RoomView.kt</code> is a plain <code>View</code> (not a <code>SurfaceView</code> — a handful of <code>drawCircle</code>/<code>drawLine</code> calls
+per frame doesn't justify a <code>SurfaceView</code>'s own render thread and <code>SurfaceHolder</code> lifecycle),
+invalidated once per vsync via <code>Choreographer.postFrameCallback</code>. Three panels, all reading the same
+<code>NativeBridge.nativeGetObjectState()</code> snapshot the encode loop just built for that frame, laid out
+as rounded cards on a shared dark palette (<code>Theme.kt</code> — one file of colors/corner-radii/spacing so
+this view, <code>ChannelMeterView</code>, and <code>MainActivity</code>'s own chrome all read as one dashboard instead of
+three separately-tuned screens):</p>
+<ul>
+<li><strong>3D track</strong> (left, square) — a tilted isometric ("2:1 video-game style") projection showing all
+  three room axes at once, plus the lead object's own trail (recent history behind it, faded;
+  planned course ahead of it, queried fresh from native each frame with no deflection, since future
+  input can't be known) with a drop-line from each trail point straight down to the floor, so height
+  reads as an unambiguous vertical offset rather than a diagonal easy to misjudge in an oblique
+  projection. Small <code>FRONT</code>/<code>BACK</code>/<code>LEFT</code>/<code>RIGHT</code> callouts sit just outside the floor plan's own
+  edges — the one panel where the tilted angle alone doesn't make orientation obvious at a glance.
+  Deliberately square, not a wide rectangle: the isometric projection's own natural bounding box is
+  close to square, so a wider container mostly added dead margin rather than more visible content.
+  Its header also carries a live encode-stats readout (<code>bursts N/N | encode X.Xms/32ms | Atmos
+  (signed)</code>, underruns only appended when actually nonzero) — real-time viability was a genuine,
+  previously-hit problem on this SoC (see
+  <a href="#real-time-performance-relwithdebinfo-and-a-real-mdct-bug-it-uncovered">Real-time performance</a>
+  above), so showing the live number is worth more here than in most encode loops.</li>
+<li><strong>Top-down (X/Y)</strong> and <strong>elevation (X/Z)</strong> (right, side by side, not stacked — each gets the full
+  panel height this way instead of half of it) — the selected (lead) object ringed, a white diamond
+  marking the listener at the room's exact centre (both panels' (0.5, 0.5) — see
+  <a href="#objects-one-interactive-lead-two-ambient-all-on-pre-planned-orbits">Objects</a> above), and, on the
+  top-down panel, a faint dashed guide circle showing the lead's planned orbit so a viewer can see it
+  pushed off course and springing back rather than just a dot moving with no reference
+  (<code>kTrajectoryGuideRadius</code>, duplicated from <code>live_cursor.cpp</code>'s <code>kTrajectory[0].radius</code> — kept in
+  sync by comment on both ends, not queried over JNI, since it's fixed at compile time on both). Each
+  panel's own plotted room stays a true square, centred inside whatever rectangle its card actually
+  is — both axes share the same normalized <code>[0,1]</code> scale, so a non-square plot would stretch one
+  axis relative to the other and turn the (genuinely circular) guide into a misleading ellipse.</li>
+<li><strong>Speaker activity (bed)</strong> (bottom-left, alongside the control hints, not its own full-width row —
+  kept deliberately compact, since it's "interesting, but doesn't need to be prominent") — a
+  segmented, LED-style meter per real bed channel (<code>StreamStats::channel_levels</code>, sourced from
+  <code>AtmosEncoder::bed()</code> — the literal audio a legacy 5.1 decoder hears, not a guess from the room-
+  position math), with a bottom-to-top color ramp and a slowly-decaying peak-hold line, the same
+  "catch the loudest recent moment" behavior a real hardware VU meter has.</li>
+</ul>
+<p>Two transient overlays, sharing one <code>TextView</code> (mutually exclusive by construction) rather than
+competing for the same screen space:</p>
+<ul>
+<li><strong>First-launch orientation cue</strong> — "This is the front wall / Up on the stick/D-pad = toward the
+  screen," shown once, the first time the receiver becomes ready (immediately at launch, or after
+  some <a href="#hdmi-receiver-resilience-waiting-not-crashing">waiting</a> — never while still waiting, which
+  would just be confusing). Dismissed by the first real input, or auto-fades after 5s.</li>
+<li><strong>Idle/attract prompt</strong> — "Press any button to take control," shown after 14s of no input (a demo
+  left alone between visitors should invite the next person, not just sit there), dismissed the
+  instant real input resumes.</li>
+</ul>
+<p><img alt="First-launch orientation cue over the 3D track panel" src="../screenshots/android-orientation-cue.png" /></p>
+<h2 id="hdmi-receiver-resilience-waiting-not-crashing">HDMI receiver resilience: waiting, not crashing<a class="headerlink" href="#hdmi-receiver-resilience-waiting-not-crashing" title="Permanent link">&para;</a></h2>
+<p>Earlier hands-on use surfaced a real annoyance: if the AVR/receiver was off (or not yet HDMI-
+negotiated) at launch, or got powered off mid-session, the app just sat there having silently done
+nothing — the only fix was a force-restart, timed for whenever the receiver happened to be ready.
+<code>MainActivity.reconcileReceiverState()</code> closes that gap: <code>nativeStartLiveCursor()</code> is no longer
+called unconditionally in <code>onCreate</code> — it's gated on the receiver actually accepting E-AC3 right
+now, re-evaluated on every <code>AudioManager.ACTION_HDMI_AUDIO_PLUG</code> broadcast (the system's own
+"HDMI audio route capabilities changed" signal — receiver on/off, input switched, EDID
+renegotiated) and on a slow (2.5s) periodic fallback, since that broadcast isn't guaranteed on every
+real AVR power-off (some receivers don't change their reported EDID/HPD state on standby). A
+persistent, full-screen "Waiting for receiver…" interstitial covers the dashboard until then, and
+disappears on its own once streaming actually starts — no restart, ever.</p>
+<p><img alt="Waiting-for-receiver interstitial, shown until the AVR is detected" src="../screenshots/android-waiting-for-receiver.png" /></p>
+<div class="admonition warning">
+<p class="admonition-title"><code>AudioTrack.isDirectPlaybackSupported()</code> blocks indefinitely against your own active track</p>
+<p>Getting this right took two real bugs found on hardware, not just review — worth stating
+explicitly so neither is rediscovered the hard way again:</p>
+<p><strong>The capability probe hangs, not fails, if called while a direct <code>AudioTrack</code> on the same
+route is already open or still opening.</strong> The obvious design — poll
+<code>isDirectPlaybackSupported()</code> on a timer regardless of state, start/stop the loop based on the
+result — froze the whole Activity on its own splash screen forever (main thread confirmed idle
+via <code>dumpsys</code>, no exception, the encode loop itself kept streaming happily underneath) the
+moment that poll landed while the loop's <code>AudioTrack</code> was live, almost certainly audio-policy-
+manager lock contention rather than a bug in the probe itself. The same hang recurred calling
+it again moments after <code>nativeStartLiveCursor()</code>, before that background thread's own
+<code>AudioTrack.Builder().build().play()</code> had resolved — opening a track contends the same way an
+already-playing one does. <code>reconcileReceiverState()</code> now probes capability <strong>only</strong> when
+<code>NativeBridge.nativeIsLiveCursorRunning()</code> is false <em>and</em> no start attempt is still within a
+3s grace period (<code>START_ATTEMPT_GRACE_MS</code>); detecting a receiver disappearing <strong>while already
+streaming</strong> instead watches <code>NativeBridge.nativeGetUnderrunCount()</code> (the same
+<code>StreamStats::underruns</code> counter <code>submit()</code> already tracked) for a rise, since a real AVR loss
+shows up as failed <code>AudioTrack.write()</code> calls, and this needs no further call into
+<code>AudioTrack</code> at all.</p>
+<p><strong>A view's default visibility has to match its state variable's own default, or the first
+"no change" transition never applies either.</strong> The waiting overlay started <code>GONE</code> while
+<code>receiverReady</code> started <code>false</code> (Kotlin's own default) — consistent-looking, but
+<code>setReceiverReady()</code> only touches the view on an actual <em>change</em> (<code>ready == receiverReady</code>
+short-circuits otherwise), so a receiver absent from the very first check (<code>false -&gt; false</code>,
+no change) left the overlay hidden and the full (empty, zeroed) dashboard showing instead —
+confirmed on a real device screenshot. Fixed by defaulting the overlay to <code>VISIBLE</code>, matching
+<code>receiverReady</code>'s own <code>false</code> default.</p>
+</div>
+<h2 id="object-signing">Object signing<a class="headerlink" href="#object-signing" title="Permanent link">&para;</a></h2>
+<div class="admonition warning">
+<p class="admonition-title">Object motion is audible even without this — but not as reconstructable objects</p>
+<p><code>AtmosEncoder</code> pans every object into the transmitted 5.1 bed regardless of signing status
+(see <code>atmos.hpp</code>), so a plain, unsigned build of this app already produces audible movement
+on any decoder — panned across the fixed channel layout. What signing adds is the <em>object</em>
+audio: a real Dolby-licensed decoder gates JOC object decode on a keyed HMAC over the EMDF
+protection field. The algorithm that produces that tag is in-tree; the key it needs is not.</p>
+</div>
+<p>The signer is <code>ac3::signing</code> (<code>src/signing/</code>) — committed, clean-room and dependency-free, the
+same library <code>ac3cli</code> uses. Its full design (what's signed, why the algorithm is committable but
+the key isn't) is in <a href="../../concepts/object-signing/">Object signing</a>; this section covers only what
+is specific to the app. The app's seam is <code>shield_signing_hook.{hpp,cpp}</code>, one committed
+translation unit — no stub/enabled split and no CMake option any more, because there is no secret
+in the code to keep out of a build. It signs <strong>per frame</strong>, right after <code>encode_frame()</code> and before
+IEC 61937 wrapping, since it streams live rather than writing a file.</p>
+<p><strong>The key is a bundled asset, written from a CI secret.</strong> The desktop CLI takes a key by path or
+env var, but this app signs on-device, so the key has to travel in the APK as an asset,
+<code>app/src/main/assets/signing.key</code>. That file is <strong>gitignored</strong> and is materialized at build time —
+CI writes the base64 <code>ATMOS_SIGNING_KEY</code> secret verbatim into it (<code>.github/workflows/_build.yml</code>),
+or you drop one in by hand for a local signed build. <code>init_signing()</code> loads it once through the same
+<code>AAssetManager</code> the lead-voice asset uses and decodes it (base64 or raw) via the same
+<code>ac3::signing::decode_signing_key()</code> the CLI applies.</p>
+<p><strong>Unsigned builds omit the object container entirely, not just leave it unsigned.</strong> An unsigned
+but <em>present</em> EMDF container is not a safe degraded mode — per <code>AtmosConfig::emit_object_metadata</code>'s
+own comment, a decoder that validates the <code>emdf_protection</code> field treats the container's sync word
+as a commitment to object decoding and refuses the whole stream if it doesn't validate, rather than
+falling back to plain 5.1. <code>shield_signing_hook.hpp</code>'s <code>signing_available()</code> (<code>true</code> only once a key
+asset actually loaded) lets <code>live_cursor.cpp</code> decide this once at startup: <code>emit_object_metadata</code>
+is set to <code>signing_available()</code>, so a keyless build runs the same <code>bed51</code> mode <code>ac3cli mode bed51</code>
+exposes — no container at all, always safe, on every receiver — while only a build carrying the key
+ever emits and signs one.</p>
+<p>To build a signed APK on your own machine, drop your own <code>signing.key</code> (base64 or raw bytes) into
+<code>app/src/main/assets/</code> — gitignored, so <code>git status</code> never shows it — and build as normal:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>./gradlew<span class="w"> </span>assembleDebug<span class="w"> </span>--no-daemon
+</code></pre></div>
+<div class="admonition danger">
+<p class="admonition-title">A signed APK contains the key</p>
+<p>Because the app signs on-device, the key ships <strong>inside</strong> any signed-build APK as that asset —
+anyone with the APK can extract it. A signed APK is therefore as sensitive as the key itself:
+sideload it to your own Shield via <code>adb install</code> and never distribute it. A build without the
+asset is the safe unsigned app and has nothing to revert.</p>
+</div>
+<h2 id="building-and-running">Building and running<a class="headerlink" href="#building-and-running" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">cd</span><span class="w"> </span>apps/android
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>./gradlew<span class="w"> </span>assembleDebug<span class="w"> </span>--no-daemon
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>adb<span class="w"> </span>connect<span class="w"> </span>&lt;shield-ip&gt;:5555<span class="w">          </span><span class="c1"># if not on USB</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>adb<span class="w"> </span>-s<span class="w"> </span>&lt;shield-ip&gt;:5555<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>app/build/outputs/apk/debug/app-debug.apk
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>adb<span class="w"> </span>-s<span class="w"> </span>&lt;shield-ip&gt;:5555<span class="w"> </span>shell<span class="w"> </span>am<span class="w"> </span>start<span class="w"> </span>-n<span class="w"> </span>com.ac3forge.shield/.MainActivity
+</code></pre></div>
+<p><code>local.properties</code> needs <code>sdk.dir</code> pointing at an Android SDK with NDK 26.1.10909125 and CMake
+3.31.6 installed (via Android Studio's SDK Manager, or <code>sdkmanager --install</code>). For a local <em>signed</em>
+build, also drop a <code>signing.key</code> asset into <code>app/src/main/assets/</code> as described in
+<a href="#object-signing">Object signing</a>.</p>
+<h2 id="release-ci">Release / CI<a class="headerlink" href="#release-ci" title="Permanent link">&para;</a></h2>
+<p>The app builds alongside the desktop packages rather than only ever being hand-built locally:
+<code>.github/workflows/_build.yml</code>'s <code>build-android</code> job builds the <strong>debug</strong> variant on every push
+(no Android SDK/NDK setup beyond what <code>ubuntu-latest</code> ships plus an explicit pin of the exact NDK
+version, <code>26.1.10909125</code>, the same "don't trust whatever the image happens to cache" reasoning
+every other toolchain step in that workflow already follows) — a continuous smoke test proving the
+Gradle/CMake/NDK toolchain and every native source file still build, the same role <code>windows-msvc</code>'s
+always-on packaging step plays for the desktop legs. <strong>Object signing is gated purely on the
+<code>ATMOS_SIGNING_KEY</code> secret, not on whether this is a release.</strong> Both <code>ci.yml</code> and <code>release.yml</code>
+forward that secret, so if it is set, <em>every</em> Shield build — the always-on debug APK included —
+bundles the key asset and signs; with no secret the step is skipped and the build is the unsigned
+bed51 app.</p>
+<p>For an actual release (<code>release.yml</code>, <code>do_package: true</code>), the same job also builds and stages the
+<strong>release</strong> variant (<code>CMAKE_BUILD_TYPE=Release</code>) as <code>ac3forge-shield-&lt;version&gt;.apk</code>. A separate,
+independent signature — <em>APK code-signing</em> — also applies to it: the APK is signed with a real
+release keystore when <code>ANDROID_KEYSTORE_BASE64</code> and its companion secrets are provisioned (see
+<code>build.gradle.kts</code>'s <code>releaseSigningAvailable</code>), and falls back to the debug keystore otherwise —
+this app is sideload-only, so the release key matters only for update-signature continuity, not a
+store requirement. (Object signing above is unrelated to this APK keystore; a signed-objects APK
+carries the key and must not be distributed — see <a href="#object-signing">Object signing</a>.) The
+APK is uploaded as a <code>packages-android</code> artifact and folded into the
+GitHub Release alongside the Windows/Linux/macOS packages (checksummed, GPG-signed, and
+build-provenance-attested exactly like every other package — <code>release.yml</code>'s artifact globs all
+include <code>*.apk</code>).</p>
+<p><strong>Promoted, not experimental.</strong> This job used to run <code>continue-on-error: true</code>, before it had ever
+actually run on GitHub's hosted runners. It has since gone green three consecutive times on real
+hosted runners (<code>feature/shield-atmos-platform</code>'s own PR history) — comfortably past the bar
+<code>macos-llvm</code> was promoted at — so that line is gone: a <code>build-android</code> failure now blocks like
+every other required leg.</p>
+<h2 id="what-has-and-has-not-been-verified">What has and has not been verified<a class="headerlink" href="#what-has-and-has-not-been-verified" title="Permanent link">&para;</a></h2>
+<div class="admonition note">
+<p class="admonition-title">Verified on real hardware</p>
+<p>Installed, launched, and run repeatedly on the developer's own Shield (Tegra X1 SoC) connected
+to a real AV receiver over HDMI, across every round of feature work described on this page, not
+just the initial one. The encode loop holds exact real-time cadence (32.0ms/frame, zero
+underruns) for extended runs. Both Shield Controller analog input and D-pad/remote-style input
+(the latter verified via <code>adb shell input keyevent</code> injection) move the correct object; the
+pre-planned orbit trajectory, input-driven deflection with spring-back, the snap-back long
+press, the axis-mode toggle, and the two ambient objects have all been exercised live and the
+room visualization tracks the encode loop's own state throughout.</p>
+<p><strong>The object-signed build's object audio has been confirmed reconstructable on the real
+receiver</strong> — not just the always-audible panned bed. With the delta-bit-allocation fix
+described in the signer's own history (an unrelated bit-tracking bug that had been silently
+corrupting a large fraction of signed frames) and the real receiver powered on and HDMI-linked,
+the receiver's own front-panel display read <strong>Atmos/DD+, 48kHz in, 5.0.4 out</strong>, and the object's
+motion was audible. This resolves what had been an open question in
+<a href="../../concepts/atmos-joc/#two-honest-limitations">Two honest limitations</a> for this specific
+encoder/signer pair, though the general caveat there still applies to any <em>other</em> clean-room
+encoder without a matching signing key.</p>
+<p><strong>The bundled lead-voice asset loads and streams cleanly</strong> (<code>loaded lead voice asset: 192000
+samples (4.00s)</code> in logcat, zero underruns through extended runs), and the dashboard redesign —
+the 3D/top-down/elevation three-panel layout, the speaker-activity meter, the first-launch
+orientation cue, and the idle/attract prompt — has been confirmed rendering correctly via real
+device screenshots (<code>adb shell screencap</code>), not just compiled.</p>
+<p><strong>HDMI receiver resilience</strong> (see <a href="#hdmi-receiver-resilience-waiting-not-crashing">that section</a>
+above) has been verified in full on real hardware, including the two scenarios that can only be
+tested by physically power-cycling the AVR — turning the receiver on after the app has already
+launched waiting, and losing the receiver mid-session — both confirmed working without a
+force-restart. The happy path (receiver already on at launch) and the waiting-screen UI itself
+were verified directly; the two power-cycle scenarios were confirmed by the developer on the
+physical device.</p>
+<p>Both the release (unsigned) and local-signed debug builds install and launch without crashing;
+the release build's logcat confirms <code>object container: bed51 (omitted, unsigned build)</code> — the
+safe public default actually takes effect, not just compiles. <code>build-android</code> has itself now run
+green three consecutive times on GitHub's hosted runners — see <a href="#release-ci">Release / CI</a> above.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Not yet verified</p>
+<p><code>tests/backend/android/</code> covers only the device-free logic (burst sizing, carrier rate,
+render-device construction), built and run on the normal desktop-hosted CTest suite — there is
+no automated on-device or instrumented test for anything in this section; every claim above is
+manual verification on one specific Shield + receiver pair, not a repeatable check. Other Android
+TV hardware (a different SoC, a different receiver's own EDID/HDMI behavior) is untested. This
+is also the only platform page in the project where anything has actually run on real target
+hardware with a real receiver attached — a platform's CI legs passing (Linux's <code>alsa</code> backend
+included) is a materially different claim than this page's "installed and run on a real device"
+one, and should not be read as implying the latter.</p>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

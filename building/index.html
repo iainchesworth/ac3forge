@@ -1,0 +1,3690 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23">
+      
+      
+      
+        <link rel="canonical" href="https://iainchesworthlabs.github.io/ac3forge/building/">
+      
+      
+        <link rel="prev" href="../quickstart/">
+      
+      
+        <link rel="next" href="../platforms/windows/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Building from source - ac3forge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#building-ac3forge" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ac3forge" class="md-header__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ac3forge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Building from source
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../concepts/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../verification/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Validation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../library/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  CLI reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../gui/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  GUI guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ac3forge" class="md-nav__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ac3forge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-short-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The short version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-compiler-is-pinned-not-path-found" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The compiler is pinned, not PATH-found
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#presets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Presets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-on-linux" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building on Linux
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building on Linux">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gui-on-linux" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GUI on Linux
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#linux-audio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux audio
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Linux audio">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-alsa-still-comes-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why ALSA still comes first
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-has-and-has-not-been-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What has and has not been verified
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#packaging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Packaging
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-standards-documents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The standards documents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verified-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verified configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gold-reference-correctness-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gold-reference correctness gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/raspberry-pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Raspberry Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/wasm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebAssembly (browser demo)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/ac3-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AC-3 & E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/atmos-joc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Atmos & JOC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/object-signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../library/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Library
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/encoding-ac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/encoding-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/decoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/spatial-and-atmos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spatial & Atmos objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/station-broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A worked scene — station broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/channel-plans-and-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel plans & routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/muxing-and-sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Muxing & sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/file-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/adm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM / BW64 reading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/adm-bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM → Atmos bridging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/header-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Header map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/c-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../cli/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/metadata-options/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../gui/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GUI guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/loading-a-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Loading a source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/format-and-channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Format & channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/objects-and-motion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objects & motion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/live-session/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/source-assignment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-source & assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/coding-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/qc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QC a stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/inspect-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wasm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live decode demo (WASM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quality-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-comparison-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool comparison trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../landscape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ci-self-hosted-runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Self-hosted CI runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-short-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The short version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-compiler-is-pinned-not-path-found" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The compiler is pinned, not PATH-found
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#presets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Presets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-on-linux" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building on Linux
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building on Linux">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gui-on-linux" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GUI on Linux
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#linux-audio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux audio
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Linux audio">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-alsa-still-comes-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why ALSA still comes first
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-has-and-has-not-been-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What has and has not been verified
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#packaging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Packaging
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-standards-documents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The standards documents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verified-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verified configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gold-reference-correctness-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gold-reference correctness gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="building-ac3forge">Building ac3forge<a class="headerlink" href="#building-ac3forge" title="Permanent link">&para;</a></h1>
+<p>Every command here has been run on the configuration described under
+<a href="#verified-configuration">Verified configuration</a>. Anything not verified is marked as such.</p>
+<h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Version</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A compiler</td>
+<td>MSVC (VS 2026), clang-cl 21, GCC 16, or Clang 21</td>
+<td>C++23. <code>std::expected</code>, <code>std::print</code> and deducing-<code>this</code> are all used. One <a href="#presets">preset</a> per compiler; all seven platform/compiler legs are required, green CI (GCC 16 covers two of them — <code>linux-gcc</code> and <code>linux-gcc-arm64</code>; Clang 21 covers three — <code>linux-llvm</code>, <code>linux-llvm-arm64</code> and <code>macos-llvm</code>, each as a separate leg, though <code>macos-llvm</code> deliberately tracks Homebrew's unpinned <code>llvm</code> formula, currently also 21, rather than an exact pin) — see <a href="#verified-configuration">Verified configuration</a>.</td>
+</tr>
+<tr>
+<td>CMake</td>
+<td>≥ 3.28</td>
+<td><code>cmake_minimum_required(VERSION 3.28...4.3)</code>.</td>
+</tr>
+<tr>
+<td>Ninja</td>
+<td>any recent</td>
+<td>The presets hard-code the Ninja generator.</td>
+</tr>
+<tr>
+<td>vcpkg</td>
+<td>any recent</td>
+<td>Supplies Catch2 (needed only when tests are on); with <code>-DVCPKG_MANIFEST_FEATURES=adm</code>, the Boost header libraries <code>AC3FORGE_BUILD_ADM=ON</code> needs; and with <code>-DVCPKG_MANIFEST_FEATURES=profiling</code>, the Tracy profiler <code>AC3FORGE_ENABLE_TRACY=ON</code> needs — see <a href="#options">Options</a>. None of the three is required for a default build.</td>
+</tr>
+<tr>
+<td>Qt</td>
+<td>6.5+ prebuilt</td>
+<td>GUI only. <strong>Never from vcpkg</strong> — see <a href="#qt">Qt</a>.</td>
+</tr>
+<tr>
+<td>ALSA (<code>libasound2-dev</code>)</td>
+<td>any recent</td>
+<td>Linux only, optional. Live capture/monitor/passthrough — see <a href="#linux-audio">Linux audio</a>.</td>
+</tr>
+<tr>
+<td>PipeWire (<code>libpipewire-0.3-dev</code>)</td>
+<td>any recent</td>
+<td>Linux only, optional, used only when ALSA is not — see <a href="#linux-audio">Linux audio</a>.</td>
+</tr>
+<tr>
+<td>Python 3 + numpy</td>
+<td>3.11+</td>
+<td>Only for <code>tools/</code>; not part of the build.</td>
+</tr>
+<tr>
+<td>FFmpeg CLI</td>
+<td>8.x</td>
+<td>Only for validation scripts; not part of the build.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-short-version">The short version<a class="headerlink" href="#the-short-version" title="Permanent link">&para;</a></h2>
+<p>With <code>VCPKG_ROOT</code> set to a vcpkg checkout, from any shell — a Developer PowerShell is not
+required; see <a href="#the-compiler-is-pinned-not-path-found">The compiler is pinned, not PATH-found</a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-windows-msvc-debug
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cmake<span class="w"> </span>--build<span class="w"> </span>--preset<span class="w"> </span>build-windows-msvc-debug
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>ctest<span class="w"> </span>--preset<span class="w"> </span>test-windows-msvc-debug
+</code></pre></div>
+<p>Drop <code>-debug</code> from all three preset names for a Release build, or swap <code>msvc</code> for <code>llvm</code> to
+build with clang-cl instead. The <code>ci-windows-msvc</code> workflow preset runs the same three steps in
+one command: <code>cmake --workflow --preset ci-windows-msvc</code> (Release only — the workflow presets in
+<code>CMakePresets.json</code> don't have <code>-debug</code> variants).</p>
+<p>See <a href="#building-on-linux">Building on Linux</a> below for the equivalent on GCC/Clang.</p>
+<h2 id="the-compiler-is-pinned-not-path-found">The compiler is pinned, not PATH-found<a class="headerlink" href="#the-compiler-is-pinned-not-path-found" title="Permanent link">&para;</a></h2>
+<p>Every Windows preset chainloads <code>cmake/toolchains/windows.msvc.toolchain.cmake</code> (or
+<code>windows.llvm.toolchain.cmake</code> for clang-cl), which finds <code>cl.exe</code>/<code>clang-cl.exe</code> and <code>link.exe</code>
+by <code>find_program</code> against the MSVC tools directory, <code>NO_DEFAULT_PATH</code> — so whatever else is
+first on <code>PATH</code> (LLVM installed for something unrelated, Git for Windows' own <code>link.exe</code>) cannot
+be picked up by mistake the way a bare <code>find_package</code>-less configure would.</p>
+<p>That toolchain directory has to come from somewhere. If <code>VCToolsInstallDir</code> and <code>INCLUDE</code> are
+already set — a Developer PowerShell — it uses them. Otherwise
+<code>cmake/toolchains/windows.msvc.environment.cmake</code> locates the newest Visual Studio install with
+<code>vswhere</code>, runs its <code>vcvarsall.bat x64</code> in a subprocess, and imports the result into the CMake
+process so every compiler check, <code>try_compile</code> and the actual <code>ninja</code> invocation inherit it —
+which is what makes an ordinary shell work at all. The include/lib search paths are then baked
+onto the compile and link lines themselves, not left in the environment, so the build tree stays
+correct regardless of which shell later runs <code>cmake --build</code>.</p>
+<p>The failure mode this leaves is not "wrong compiler picked up silently" but "no compiler found
+at all": if no Visual Studio install carrying the <code>Microsoft.VisualStudio.Component.VC.Tools.x86.x64</code>
+component exists, configure fails with a <code>FATAL_ERROR</code> naming what was missing (<code>vswhere.exe</code>,
+or a matching VS install) rather than picking something else and failing later. Install the
+Visual Studio Build Tools (or Community/Professional/Enterprise) with the "Desktop development
+with C++" workload if you hit that.</p>
+<h2 id="presets">Presets<a class="headerlink" href="#presets" title="Permanent link">&para;</a></h2>
+<p><code>CMakePresets.json</code> is checked in and holds only what is machine-independent. It is built from
+hidden fragments composed together, not a flat list:</p>
+<ul>
+<li><code>core</code> — the Ninja generator, the vcpkg toolchain file from <code>$env{VCPKG_ROOT}</code>,
+  <code>AC3FORGE_BUILD_CLI</code>/<code>AC3FORGE_BUILD_TESTS</code> pinned <code>ON</code>, and the vcpkg overlay triplets under
+  <code>cmake/vcpkg/triplets/</code>. (<code>CMAKE_EXPORT_COMPILE_COMMANDS</code> comes from the top-level
+  <code>CMakeLists.txt</code> itself, not the presets.)</li>
+<li><code>debug</code> / <code>release</code> — just <code>CMAKE_BUILD_TYPE</code>.</li>
+<li><code>windows-msvc</code>, <code>windows-llvm</code>, <code>linux-gcc</code>, <code>linux-llvm</code>, <code>linux-gcc-arm64</code>,
+  <code>linux-llvm-arm64</code>, <code>macos-llvm</code> — one per platform/compiler pair. Each sets
+  <code>VCPKG_TARGET_TRIPLET</code>, chainloads that platform's toolchain
+  file (see <a href="#the-compiler-is-pinned-not-path-found">above</a>) via <code>VCPKG_CHAINLOAD_TOOLCHAIN_FILE</code>,
+  and is gated by a <code>condition</code> on <code>hostSystemName</code> so only the presets for the machine you're on
+  even appear. <code>AC3FORGE_BUILD_GUI</code> is <code>ON</code> for the two Windows ones and <code>OFF</code> for the rest — see
+  <a href="#verified-configuration">Verified configuration</a>.</li>
+</ul>
+<p>Fourteen concrete <code>config-&lt;platform&gt;[-debug]</code> presets inherit <code>[ release|debug, &lt;platform&gt;, core ]</code>,
+each with a matching <code>build-&lt;platform&gt;[-debug]</code> and <code>test-&lt;platform&gt;[-debug]</code> preset:</p>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Compiler</th>
+<th>Configure preset</th>
+<th>Build preset</th>
+<th>Test preset</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td>MSVC</td>
+<td><code>config-windows-msvc[-debug]</code></td>
+<td><code>build-windows-msvc[-debug]</code></td>
+<td><code>test-windows-msvc[-debug]</code></td>
+</tr>
+<tr>
+<td>Windows</td>
+<td>clang-cl</td>
+<td><code>config-windows-llvm[-debug]</code></td>
+<td><code>build-windows-llvm[-debug]</code></td>
+<td><code>test-windows-llvm[-debug]</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>GCC 16</td>
+<td><code>config-linux-gcc[-debug]</code></td>
+<td><code>build-linux-gcc[-debug]</code></td>
+<td><code>test-linux-gcc[-debug]</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>Clang 21</td>
+<td><code>config-linux-llvm[-debug]</code></td>
+<td><code>build-linux-llvm[-debug]</code></td>
+<td><code>test-linux-llvm[-debug]</code></td>
+</tr>
+<tr>
+<td>Linux (arm64)</td>
+<td>GCC 16</td>
+<td><code>config-linux-gcc-arm64[-debug]</code></td>
+<td><code>build-linux-gcc-arm64[-debug]</code></td>
+<td><code>test-linux-gcc-arm64[-debug]</code></td>
+</tr>
+<tr>
+<td>Linux (arm64)</td>
+<td>Clang 21</td>
+<td><code>config-linux-llvm-arm64[-debug]</code></td>
+<td><code>build-linux-llvm-arm64[-debug]</code></td>
+<td><code>test-linux-llvm-arm64[-debug]</code></td>
+</tr>
+<tr>
+<td>macOS</td>
+<td>Homebrew LLVM</td>
+<td><code>config-macos-llvm[-debug]</code></td>
+<td><code>build-macos-llvm[-debug]</code></td>
+<td><code>test-macos-llvm[-debug]</code></td>
+</tr>
+</tbody>
+</table>
+<p>The two <code>-arm64</code> rows are the same <code>linux.gcc.toolchain.cmake</code>/<code>linux.llvm.toolchain.cmake</code> files as
+their x64 counterparts — only the vcpkg triplet (<code>arm64-linux-gcc</code>/<code>arm64-linux-llvm</code>) differs; the
+toolchain files already resolve aarch64 vs x86_64 from <code>VCPKG_TARGET_ARCHITECTURE</code>. See
+<a href="../platforms/raspberry-pi/">Raspberry Pi</a>, the primary hardware this target is validated against.</p>
+<p>There is a fifteenth configure/build/test trio, Debug-only and not part of the table above
+because it isn't a platform/compiler pair but an instrumented variant of <code>linux-llvm</code>:
+<code>config-linux-llvm-asan-ubsan</code> / <code>build-linux-llvm-asan-ubsan</code> / <code>test-linux-llvm-asan-ubsan</code>,
+which inherits <code>linux-llvm</code> plus a <code>sanitize-asan-ubsan</code> fragment setting
+<code>AC3FORGE_SANITIZERS=address,undefined</code> (see <code>cmake/Sanitizers.cmake</code>; MSVC is rejected outright,
+so this only exists for GCC/Clang). See <a href="#verified-configuration">Verified configuration</a> for what CI says
+about all seventeen. There are also eight <code>ci-&lt;platform&gt;</code> <code>workflowPresets</code> (Release except for the
+asan-ubsan one, which is Debug-only) that chain configure→build→test in one
+<code>cmake --workflow --preset ci-windows-msvc</code> call; that is exactly what CI itself runs.</p>
+<p>There is a sixteenth trio, <code>config-linux-gcc-coverage</code> / <code>build-linux-gcc-coverage</code> /
+<code>test-linux-gcc-coverage</code>, the same shape as the asan-ubsan one: an instrumented variant of
+<code>linux-gcc</code>, Debug-only, not a platform/compiler pair. It inherits a <code>coverage</code> fragment setting
+<code>AC3FORGE_ENABLE_COVERAGE=ON</code> (see <code>cmake/Coverage.cmake</code>, GCC/Clang's <code>--coverage</code> gcov
+instrumentation; other compilers just warn and skip it), <code>AC3FORGE_BUILD_ADM=ON</code> with vcpkg's
+<code>adm</code> feature (so the opt-in ADM pair — <code>ac3adm</code> and its bridge — is measured alongside the
+always-on seven), plus <code>AC3FORGE_BUILD_CLI=OFF</code> and <code>AC3FORGE_BUILD_EXAMPLES=OFF</code> — purely a
+build-time saving: <code>ac3cli</code> and the <code>examples/</code> executables would link fine against the
+instrumented libraries (the gcov runtime propagates to consumers automatically, see
+<code>cmake/Coverage.cmake</code>), but the report is filtered to the library components, so building them
+instrumented buys nothing. After <code>ctest</code>,
+<code>tools/checks/coverage_report.sh</code> (the same script <code>.github/workflows/ci.yml</code>'s <code>coverage</code> job runs)
+makes one <code>gcovr</code> extraction pass over every <code>src/</code> library component and then gates line <em>and</em>
+branch coverage per component — see the script's own floor table for the current thresholds and
+the measured baseline each was calibrated against:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-linux-gcc-coverage
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cmake<span class="w"> </span>--build<span class="w"> </span>--preset<span class="w"> </span>build-linux-gcc-coverage<span class="w"> </span>--<span class="w"> </span>-k<span class="w"> </span><span class="m">0</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>ctest<span class="w"> </span>--preset<span class="w"> </span>test-linux-gcc-coverage<span class="w"> </span>-LE<span class="w"> </span>Performance
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>./tools/checks/coverage_report.sh<span class="w"> </span>-g<span class="w"> </span>gcov-15
+</code></pre></div>
+<p>There is a seventeenth trio, <code>config-linux-llvm-shared</code> / <code>build-linux-llvm-shared</code> /
+<code>test-linux-llvm-shared</code>, same shape again: an instrumented variant of <code>linux-llvm</code>, Debug-only.
+It inherits a <code>shared-libs</code> fragment setting <code>BUILD_SHARED_LIBS=ON</code>, proving <code>ac3::forge_shared</code>/
+<code>matroska::matroska_shared</code> actually work — not just that the CMake topology configures, but that
+every in-tree consumer (<code>ac3cli</code>, <code>ac3gui</code>, <code>ac3tests</code>, <code>examples/</code>) links and runs against the
+real <code>.so</code>. <code>.github/workflows/_build.yml</code> runs it as an extra step inside the existing
+<code>linux-llvm</code> leg rather than a new matrix entry, the same shape as the ASan/UBSan pass.</p>
+<p>Anything machine-specific belongs in <code>CMakeUserPresets.json</code>, which is gitignored. The pattern
+is a hidden <code>local</code> preset carrying the paths, inherited alongside the checked-in fragments:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;configurePresets&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="p">{</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;local&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">      </span><span class="nt">&quot;hidden&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">      </span><span class="nt">&quot;environment&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">        </span><span class="nt">&quot;VCPKG_ROOT&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;D:/vcpkg&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">        </span><span class="nt">&quot;VCPKG_DOWNLOADS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;D:/vcpkg-downloads&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">        </span><span class="nt">&quot;VCPKG_DEFAULT_BINARY_CACHE&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;D:/vcpkg-cache&quot;</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="p">},</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">      </span><span class="nt">&quot;cacheVariables&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">        </span><span class="nt">&quot;VCPKG_INSTALL_OPTIONS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;--x-buildtrees-root=D:/vcpkg-buildtrees;--x-packages-root=D:/vcpkg-packages&quot;</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">      </span><span class="p">}</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="p">},</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dev&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;inherits&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">&quot;local&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;debug&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;windows-msvc&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;core&quot;</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">  </span><span class="nt">&quot;buildPresets&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dev&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;configurePreset&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dev&quot;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">],</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">  </span><span class="nt">&quot;testPresets&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dev&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;configurePreset&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dev&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;outputOnFailure&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>debug</code> alone has no generator or binary directory — those live on the hidden <code>core</code> preset,
+and the compiler selection on a platform preset (<code>windows-msvc</code> here; <code>windows-llvm</code>,
+<code>linux-gcc</code>, <code>linux-llvm</code>, <code>linux-gcc-arm64</code>, <code>linux-llvm-arm64</code> and <code>macos-llvm</code> are the
+others — see <code>CMakePresets.json</code>). Missing either from <code>dev</code>'s
+<code>inherits</code> list still configures, but silently: CMake
+falls back to its platform default generator (Visual Studio, on this machine) and an in-source
+binary directory instead of <code>build/dev</code>, which is a mess to notice and worse to undo. Inherit
+all four.</p>
+<p>That keeps vcpkg's working directories off the system drive, which matters because they run to
+several gigabytes. Substitute your own paths, and swap <code>windows-msvc</code> for whichever
+platform/compiler fragment matches your machine.</p>
+<h2 id="options">Options<a class="headerlink" href="#options" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AC3FORGE_BUILD_CLI</code></td>
+<td><code>ON</code></td>
+<td>Build <code>ac3cli</code>.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_GUI</code></td>
+<td><code>ON</code> on the two Windows presets, <code>OFF</code> on Linux and macOS</td>
+<td>Build <code>ac3gui</code>. Requires Qt. Off by default outside Windows because a Qt kit isn't assumed present there — see <a href="#building-on-linux">Building on Linux</a>.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_TESTS</code></td>
+<td><code>ON</code></td>
+<td>Build the Catch2 suite. Requires Catch2.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_FETCH_CATCH2</code></td>
+<td><code>ON</code></td>
+<td>When no local Catch2 3 is found (vcpkg, a distro package, an explicit <code>CMAKE_PREFIX_PATH</code>), fetch and build v3.15.3 from source via <code>FetchContent</code> instead of failing. Turn off to insist on a package-manager copy — see <code>tests/CMakeLists.txt</code>. Irrelevant when <code>AC3FORGE_BUILD_TESTS</code> is off.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_EXAMPLES</code></td>
+<td><code>ON</code></td>
+<td>Build <code>examples/</code>, and register them as tests.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_MATROSKA</code></td>
+<td><code>ON</code></td>
+<td>Build <code>matroska::matroska</code> (<code>src/matroska</code>), the standalone Matroska container writer. <code>OFF</code> only makes sense with the CLI, GUI, tests and examples all <code>OFF</code> too — they link it unconditionally, and configure fails with a clear message otherwise (see the root <code>CMakeLists.txt</code> guard).</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_MP4</code></td>
+<td><code>ON</code></td>
+<td>Build <code>mp4::mp4</code> (<code>src/mp4</code>), the standalone MP4/ISOBMFF container writer. Same all-off constraint as <code>AC3FORGE_BUILD_MATROSKA</code>.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_MPEGTS</code></td>
+<td><code>ON</code></td>
+<td>Build <code>mpegts::mpegts</code> (<code>src/mpegts</code>), the standalone MPEG-TS container writer. Same all-off constraint as <code>AC3FORGE_BUILD_MATROSKA</code>.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_ADM</code></td>
+<td><code>OFF</code></td>
+<td>Build <code>ac3adm::ac3adm</code> (<code>src/ac3adm</code>), the standalone BW64/RF64 + ADM parser — see <a href="../library/adm/">ADM / BW64 reading</a>. Off by default, unlike every other library component: it vendors libbw64/libadm via <code>FetchContent</code>, and libadm needs several Boost header libraries, resolved separately via <code>-DVCPKG_MANIFEST_FEATURES=adm</code> (<code>vcpkg.json</code>'s <code>adm</code> feature) — turning this <code>ON</code> without also selecting that feature fails with a clear configure-time message rather than a bare "Boost not found".</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_WITH_ALSA</code></td>
+<td><code>AUTO</code></td>
+<td>Linux only. <code>AUTO</code> builds the ALSA audio backend when libasound's headers are present; <code>ON</code> requires them; <code>OFF</code> never builds it. Takes precedence over <code>AC3FORGE_WITH_PIPEWIRE</code> when both are found — see <a href="#linux-audio">Linux audio</a>.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_WITH_PIPEWIRE</code></td>
+<td><code>AUTO</code></td>
+<td>Linux only. <code>AUTO</code> builds the PipeWire audio backend when libpipewire-0.3's headers are present <em>and</em> ALSA was not selected; <code>ON</code> requires the headers (independently of ALSA); <code>OFF</code> never builds it. See <a href="#linux-audio">Linux audio</a>.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_SANITIZERS</code></td>
+<td>empty</td>
+<td>Comma-separated <code>-fsanitize=</code> value, e.g. <code>address,undefined</code> — see <code>cmake/Sanitizers.cmake</code>. Empty is a no-op; GCC/Clang only, MSVC is a configure error. Set via the <code>-asan-ubsan</code> preset above rather than by hand.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_ENABLE_COVERAGE</code></td>
+<td><code>OFF</code></td>
+<td><code>--coverage</code> gcov instrumentation over every target it's linked into — see <code>cmake/Coverage.cmake</code>. Off is a no-op; GCC/Clang only, other compilers get a configure-time warning and no instrumentation. Set via the <code>-coverage</code> preset above rather than by hand.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_ENABLE_TRACY</code></td>
+<td><code>OFF</code></td>
+<td>Tracy profiler instrumentation (<code>ac3::tracy</code> — see <code>cmake/Tracy.cmake</code>). Needs vcpkg's <code>profiling</code> manifest feature (<code>-DVCPKG_MANIFEST_FEATURES=profiling</code>), which supplies Tracy itself; off is a no-op.</td>
+</tr>
+<tr>
+<td><code>AC3FORGE_BUILD_FUZZERS</code></td>
+<td><code>OFF</code></td>
+<td>Build the libFuzzer harnesses under <code>fuzz/</code>. Clang only (GCC and MSVC ship no libFuzzer); use <code>fuzz/run.sh</code> rather than this option directly — it configures a dedicated <code>build/fuzz</code> with the right compiler. See <a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/fuzz/README.md"><code>fuzz/README.md</code></a>.</td>
+</tr>
+</tbody>
+</table>
+<p>Building the library and CLI alone, with neither Qt nor vcpkg involved:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-windows-msvc-debug<span class="w"> </span>-DAC3FORGE_BUILD_GUI<span class="o">=</span>OFF<span class="w"> </span>-DAC3FORGE_BUILD_TESTS<span class="o">=</span>OFF
+</code></pre></div>
+<p>The vcpkg toolchain file is still referenced by the preset, so <code>VCPKG_ROOT</code> must still point
+at a checkout — it simply has nothing to install. To build with no vcpkg at all, configure
+without the preset and pass the generator and build type by hand.</p>
+<h2 id="building-on-linux">Building on Linux<a class="headerlink" href="#building-on-linux" title="Permanent link">&para;</a></h2>
+<p><code>config-linux-gcc</code> and <code>config-linux-llvm</code> (each with a <code>-debug</code> variant, same as the Windows
+presets) are GCC 16 and Clang 21 respectively. They do <strong>not</strong> share the <code>debug</code>/<code>release</code> bare
+names used elsewhere in this document — there is no <code>cmake --preset debug</code> on any platform; see
+<a href="#presets">Presets</a> above.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VCPKG_ROOT</span><span class="o">=</span>/path/to/vcpkg
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-linux-gcc-debug
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>cmake<span class="w"> </span>--build<span class="w"> </span>--preset<span class="w"> </span>build-linux-gcc-debug
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>ctest<span class="w"> </span>--preset<span class="w"> </span>test-linux-gcc-debug
+</code></pre></div>
+<p>Substitute <code>linux-llvm</code> for <code>linux-gcc</code> to build with Clang instead. <code>VCPKG_ROOT</code> works the same
+way as on Windows: it must point at a vcpkg checkout for the toolchain file the preset
+references, even though (as on Windows) it supplies nothing but Catch2. This project's own
+convention keeps that checkout under <code>/opt/vcpkg</code>, but any path works — there is nothing
+Linux-specific about vcpkg here.</p>
+<h3 id="gui-on-linux">GUI on Linux<a class="headerlink" href="#gui-on-linux" title="Permanent link">&para;</a></h3>
+<p>Both Linux presets default <code>AC3FORGE_BUILD_GUI</code> to <code>OFF</code>. That is not because the GUI cannot be
+built on Linux — <code>cmake/FindQt6.cmake</code> resolves a Linux Qt kit the same way it resolves a
+Windows one (distro packages land on CMake's own prefixes; relocated or <code>aqtinstall</code> kits are
+searched under <code>~/Qt</code>, <code>/opt/Qt</code> and friends), and <code>ac3gui</code> builds clean and passes its headless
+<code>--smoke</code> run under both Linux presets. It defaults off because, unlike on Windows/macOS, a Qt
+kit is not assumed to be present on every Linux machine that builds this project — see
+<code>linux-gcc</code>'s own <code>description</code> in <code>CMakePresets.json</code>. Opt in explicitly once Qt is installed:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-linux-gcc-debug<span class="w"> </span>-DAC3FORGE_BUILD_GUI<span class="o">=</span>ON
+</code></pre></div>
+<p>Qt 6.5+ is required, same as everywhere else. On Debian/Ubuntu:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>qt6-base-dev<span class="w"> </span>qt6-base-dev-tools<span class="w"> </span>qt6-declarative-dev<span class="w"> </span>qt6-declarative-dev-tools
+</code></pre></div>
+<p>Other distros need the equivalent Qt6 base + declarative (QML/Quick) development packages;
+package names vary (Fedora's are <code>qt6-qtbase-devel</code> / <code>qt6-qtdeclarative-devel</code>, for example).</p>
+<p><strong>The <code>qmlshapesplugin</code> / <code>labsmodelsplugin</code> / <code>qmlfolderlistmodelplugin</code> CMake warnings.</strong>
+Configuring with the GUI on prints warnings that these — and, in fact, every other built-in
+QML plugin <code>ac3gui</code> transitively touches through <code>QtQuick.Controls</code> (its styles, dialogs,
+layouts, and so on) — "will not be linked", because the <code>Qt6::&lt;name&gt;plugin</code> CMake target each
+would need does not exist. This is a property of how Ubuntu's apt-packaged Qt6 is built, not of
+this project: the official Qt installer exports a static-link CMake target for every built-in
+plugin so a fully self-contained executable can embed them, but a distro's dynamically-linked
+Qt6 package does not need that and does not export it. It does <strong>not</strong> mean the plugins are
+missing. Confirmed on Ubuntu 26.04's Qt 6.10: the <code>.so</code> files are installed at the normal QML
+import path with valid <code>qmldir</code> files, and the QML engine loads them from there at runtime the
+same way it loads every other Qt Quick module, independent of whether CMake could statically
+link them in. <code>ac3gui</code>'s own QML never imports <code>Qt.labs.*</code> or <code>QtQuick.Shapes</code> directly — the
+three named in the warning are pulled in transitively by <code>QtQuick.Dialogs</code>' non-native
+fallback implementation, which backs <code>Main.qml</code>'s <code>FileDialog</code>s only when no native/portal
+dialog is available, and which a headless <code>--smoke</code> run (verified with
+<code>QT_LOGGING_RULES=qt.qml.import.debug=true</code>) never even requests. Safe to ignore.</p>
+<h3 id="linux-audio">Linux audio<a class="headerlink" href="#linux-audio" title="Permanent link">&para;</a></h3>
+<p>Three of ac3forge's features touch the sound hardware — live capture (<code>ac3cli devices</code>,
+<code>record</code>), monitor playback (<code>monitor</code>), and IEC 61937 bitstream passthrough (<code>outputs</code>,
+<code>play</code>). Everything else is file I/O and needs no audio stack at all; <code>ac3cli spdif</code> in
+particular reaches an AV receiver by writing a WAV, on any machine.</p>
+<p>On Linux those three are implemented over <strong>ALSA</strong> when its headers are present, and over
+<strong>PipeWire</strong> when they are not but PipeWire's are — see <a href="#why-alsa-still-comes-first">Why ALSA still comes
+first</a> for the precedence between them. Installing ALSA's headers
+is one package:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>libasound2-dev
+</code></pre></div>
+<p>(<code>alsa-lib-devel</code> on Fedora, <code>alsa-lib</code> on Arch.) Nothing else is needed: no PulseAudio
+development headers, no vcpkg port, no runtime daemon. Recording from the ALSA <code>default</code> device
+goes through PipeWire or PulseAudio automatically wherever one is running, because that is what
+those install themselves as.</p>
+<p>PipeWire's headers are the alternative, for a machine without ALSA's:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>libpipewire-0.3-dev
+</code></pre></div>
+<p>(<code>pipewire-devel</code> on Fedora.) Located via pkg-config rather than a CMake find module, since
+PipeWire ships none of its own.</p>
+<p>Both dependencies are <strong>optional and detected</strong>. Configure reports which one it picked:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>-- ALSA 1.2.15.3: live capture, monitor playback and IEC 61937 passthrough enabled
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>--   Audio backend  : alsa
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>-- PipeWire 1.6.2: live capture and monitor playback enabled; IEC 61937 passthrough negotiates
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>   for real but needs a compressed codec enabled on the target node by the session manager first
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>   - see src/audio/src/backend/pipewire/passthrough.cpp
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>--   Audio backend  : pipewire
+</code></pre></div>
+<p>Without either set of headers, configure succeeds anyway and says so; the build then selects
+<code>src/audio/src/backend/posix/</code>, whose entry points all return <code>kNoBackend</code>, and <code>ac3cli</code> marks
+the affected commands <code>UNAVAILABLE HERE</code> in its usage rather than pretending they exist. Pass
+<code>-DAC3FORGE_WITH_ALSA=ON</code> and/or <code>-DAC3FORGE_WITH_PIPEWIRE=ON</code> to turn a missing set of headers
+into a configure error instead, which is what a packaging build wants.</p>
+<h4 id="why-alsa-still-comes-first">Why ALSA still comes first<a class="headerlink" href="#why-alsa-still-comes-first" title="Permanent link">&para;</a></h4>
+<p>Capture and monitor playback are ordinary PCM and both backends do them for real — native
+<code>pw_stream</code> on PipeWire's side, not its ALSA-compatibility shim. Passthrough is the
+discriminator, and it is what the whole project is for: sending an AC-3 or E-AC-3 elementary
+stream down an S/PDIF or HDMI link so the receiver decodes it.</p>
+<p>That is not a "format" on Linux the way it is on Windows. A bitstream is opened as plain 16-bit
+stereo PCM, and what tells the receiver these bytes are Dolby Digital rather than music is the
+IEC 60958 <strong>channel status</strong> travelling beside them — specifically the non-audio bit, AES0
+bit 1. ALSA is where that bit is expressed (as arguments on the device name,
+<code>iec958:CARD=PCH,DEV=0,AES0=0x06,…</code>), and it works the moment compatible hardware exists — no
+extra configuration.</p>
+<p>PipeWire has its own real, current, native mechanism for the same thing —
+<code>SPA_MEDIA_SUBTYPE_iec958</code>, <code>spa_format_audio_iec958_build()</code>, <code>PW_STREAM_FLAG_EXCLUSIVE</code> — not
+aspirational API surface; <code>src/audio/src/backend/pipewire/passthrough.cpp</code>'s own header comment cites a
+real shipped client (Kodi's PipeWire passthrough support) that negotiates exactly this way. What
+it does not have is ALSA's "just works": a PipeWire sink only offers a compressed codec once its
+<code>iec958Codecs</code> control has been populated by the session manager (a WirePlumber ALSA-monitor
+rule, or a one-off <code>pw-cli</code> call) — configuration this library has no portable way to perform on
+a caller's behalf. On a stock desktop where nobody has touched that setting, every PipeWire sink
+honestly has no compressed codec enabled, even though the exact same hardware is reachable
+directly through ALSA underneath the very PipeWire daemon that's running.</p>
+<p>That is why ALSA keeps first precedence in <code>src/audio/CMakeLists.txt</code> whenever both are found,
+rather than PipeWire winning by default for being the modern norm on most current desktops:
+preferring it unconditionally would silently regress <code>ac3cli outputs</code>/<code>play</code> on exactly the
+common case where nobody has configured <code>iec958Codecs</code>. The explicit escape hatch for a machine
+where PipeWire's compressed codecs genuinely are configured is
+<code>-DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON</code>, the same shape <code>-DAC3FORGE_WITH_ALSA=OFF</code>
+alone already has today.</p>
+<h4 id="what-has-and-has-not-been-verified">What has and has not been verified<a class="headerlink" href="#what-has-and-has-not-been-verified" title="Permanent link">&para;</a></h4>
+<p><strong>ALSA.</strong> Verified on WSL2 Ubuntu 26.04 with gcc 15.2 and clang 21.1, in every configuration:
+with libasound present and absent, and under ASan+UBSan with leak detection. The full suite
+passes in all of them. The device-independent halves of the backend — device-name construction,
+channel-status derivation, the negotiation, the render and capture threads, start/stop, and the
+error mapping — were additionally driven end to end against ALSA's software <code>null</code> PCM.</p>
+<p><strong>What real hardware has and has not shown.</strong> ALSA device enumeration has since run on real
+hardware — a Raspberry Pi 4B enumerated and correctly classified its <code>vc4hdmi</code> HDMI outputs
+(see <a href="../platforms/raspberry-pi/#verified-configuration">Raspberry Pi</a>). What remains unverified
+on Linux is bitstreaming to a real receiver: WSL2 has no sound devices and no kernel sound
+modules, so nothing here has been played to an actual S/PDIF or HDMI output, and no AV receiver
+has been asked to lock onto the result. Whether a given output accepts a bitstream is
+per-device anyway — <code>ac3cli outputs</code> probes each one and says.</p>
+<p><strong>PipeWire.</strong> Verified on the same WSL2 Ubuntu 26.04 host with libpipewire-0.3 1.6.2, gcc 15.2
+and clang 21.1, with <code>-DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON</code> forcing the
+selection (WSL2's image has both sets of headers installed, and ALSA wins by default — see
+above). The full suite passes on both compilers. There is no PipeWire session running in that
+environment at all (no <code>pipewire</code>/<code>wireplumber</code> daemon, confirmed by <code>pw_context_connect()</code>
+failing fast rather than hanging), so <code>enumerate_devices()</code>/<code>enumerate_render_devices()</code> were
+exercised against that "no session" path — returning an empty list rather than erroring, the
+PipeWire-side equivalent of ALSA's "no sound card" case — not against a real graph with real
+nodes to enumerate, negotiate with, or bitstream to. Nothing here has connected to a live
+PipeWire session, requested a compressed format from a real node, or been played to a real
+receiver.</p>
+<h2 id="qt">Qt<a class="headerlink" href="#qt" title="Permanent link">&para;</a></h2>
+<p>Qt is a <strong>prebuilt dependency and never a vcpkg port</strong>. Building Qt from source through vcpkg
+takes hours and produces a kit that is harder to debug against than the official one.</p>
+<p><code>cmake/FindQt6.cmake</code> widens <code>CMAKE_PREFIX_PATH</code> to the usual prebuilt-kit install roots — on
+Windows <code>C:/Qt</code>, <code>%USERPROFILE%/Qt</code>, <code>D:/Qt</code>; on Linux and macOS <code>~/Qt</code>, <code>/opt/Qt</code>, Homebrew and
+MacPorts prefixes, and so on — newest kit first, and then defers to Qt's own config package. Every
+Linux and macOS preset still forces <code>AC3FORGE_BUILD_GUI=OFF</code> by default — pass
+<code>-DAC3FORGE_BUILD_GUI=ON</code> explicitly on a machine that has Qt 6.5+, which is verified to work on
+Linux both locally (see <a href="#gui-on-linux">GUI on Linux</a> above) and in CI, which installs a Qt6 kit
+and turns the flag on for the four Linux build legs (x64 and arm64, GCC and Clang) plus
+<code>macos-llvm</code> (Homebrew's <code>qt</code> formula — see <a href="../platforms/macos/#gui-on-macos">macOS</a>). See
+<a href="#verified-configuration">Verified configuration</a>. If your kit is somewhere else, say so explicitly and it
+wins over the search — the project's own <code>-DAC3FORGE_QT_ROOT=</code> (or the <code>AC3FORGE_QT_ROOT</code>,
+<code>QT_ROOT_DIR</code> or <code>QTDIR</code> environment variables) is the preferred way:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-windows-msvc-debug<span class="w"> </span>-DAC3FORGE_QT_ROOT<span class="o">=</span>D:/Qt/6.8.3/msvc2022_64
+</code></pre></div>
+<p>Plain <code>-DCMAKE_PREFIX_PATH=...</code> or <code>-DQt6_DIR=...</code> also work, and take priority over everything
+<code>FindQt6.cmake</code> does. If you do not want the GUI, <code>-DAC3FORGE_BUILD_GUI=OFF</code> removes the
+dependency entirely.</p>
+<h2 id="packaging">Packaging<a class="headerlink" href="#packaging" title="Permanent link">&para;</a></h2>
+<p><code>cmake/Packaging.cmake</code> wires CPack up behind the platform preset matrix. A plain ZIP is
+always produced; NSIS (Windows), DEB/RPM (Linux) and DragNDrop (macOS) are added on top when
+the packaging tool for that format is found on <code>PATH</code>, so <code>cpack</code> degrades gracefully instead
+of failing outright on a machine that does not have e.g. <code>makensis</code> installed.</p>
+<p>From a Developer PowerShell, with <code>VCPKG_ROOT</code> set:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>cmake<span class="w"> </span>--preset<span class="w"> </span>config-windows-msvc
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>cmake<span class="w"> </span>--build<span class="w"> </span>--preset<span class="w"> </span>build-windows-msvc
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>cpack<span class="w"> </span>--preset<span class="w"> </span>pack-windows-msvc
+</code></pre></div>
+<p>The equivalent <code>pack-&lt;platform&gt;</code> preset exists for every entry in the platform matrix
+(<code>pack-windows-llvm</code>, <code>pack-linux-gcc</code>, <code>pack-linux-llvm</code>, <code>pack-linux-gcc-arm64</code>,
+<code>pack-linux-llvm-arm64</code>, <code>pack-macos-llvm</code>). A pack preset reuses whatever the matching build
+tree was configured with — on a non-Windows preset that includes the GUI only if you opted in
+(<code>-DAC3FORGE_BUILD_GUI=ON</code>, which is exactly what CI's Linux and macOS packaging legs pass — see
+<a href="#gui-on-linux">GUI on Linux</a> and <a href="../platforms/macos/#gui-on-macos">macOS</a>). Beyond <code>windows-msvc</code>'s continuous per-push packaging, the
+<code>release_package</code> legs have run for real on tagged releases, and <code>pack-linux-gcc-arm64</code> has
+additionally been run by hand on a real Raspberry Pi 4B with the resulting <code>.deb</code> inspected —
+see <a href="../platforms/raspberry-pi/#verified-configuration">Raspberry Pi</a>. Packages land in
+<code>packages/</code> at the repository root.
+<code>cmake --build --preset build-windows-msvc --target pack-ac3forge</code> runs the same thing from
+inside an IDE's target list instead of the command line.</p>
+<p><code>ac3cli</code>/<code>ac3gui</code> and <code>ac3::forge</code>/<code>matroska::matroska</code> are both installed and packaged, as
+independent CPack components (<code>runtime</code>, plus <code>library</code>/<code>libruntime</code> for the codec itself) - a
+second <code>ac3forge-dev-*</code> archive alongside the usual end-user one, for a third party consuming the
+codec via <code>find_package(ac3forge)</code> rather than running it as a program; on Linux, <code>library</code>/
+<code>libruntime</code> also become real <code>libFOO</code>/<code>libFOO-dev</code>-style DEB/RPM packages rather than only an
+archive. See
+<a href="../library/">Using ac3::forge</a> for the CMake side and
+<a href="../releasing/#what-gets-published">docs/releasing.md</a> for exactly what ships where.
+<code>ac3::audio</code> (live capture/monitor/passthrough, <code>src/audio/</code>) stays link-only and unpackaged -
+a CLI/GUI implementation detail, not part of either component.</p>
+<p>CI packages the <code>windows-msvc</code> leg on every push and uploads the result as a workflow
+artifact (<code>.github/workflows/_build.yml</code>), so the packaging path is exercised continuously
+rather than only when someone remembers to run it locally.</p>
+<p>A tag-triggered release workflow (<code>.github/workflows/release.yml</code>) builds, signs, attests and
+publishes packages for the four <code>release_package</code> legs — <code>windows-msvc</code>, <code>linux-gcc</code>,
+<code>linux-gcc-arm64</code> and <code>macos-llvm</code>, one canonical build per OS/architecture — whenever a
+<code>vX.Y.Z</code> tag is pushed; a packaging failure on any of them blocks the release like any other
+required leg. The release carries GPG signing (optional, off until a key is provisioned),
+keyless Sigstore/OIDC build provenance, an SPDX SBOM, and a GitHub Release; four beta releases
+(v0.2.0-beta.1 through v0.5.0-beta.1) have shipped through this path for real. See
+<a href="../releasing/">docs/releasing.md</a> for the full process, including how to provision the GPG key.</p>
+<p>There is also a staged, unpublished vcpkg port at <code>packaging/vcpkg-port/ac3forge/</code>
+(<code>portfile.cmake</code>, <code>usage</code>, its own <code>vcpkg.json</code>), pending submission to the curated
+<code>microsoft/vcpkg</code> registry. Today it exposes one feature, <code>matroska</code> (on by default); a consumer
+uses the installed package via <code>find_package(ac3forge)</code> exactly as
+<a href="../library/">Using ac3::forge</a> documents. The per-release submission flow is in
+<a href="../releasing/#vcpkg-port">docs/releasing.md</a>.</p>
+<h2 id="the-standards-documents">The standards documents<a class="headerlink" href="#the-standards-documents" title="Permanent link">&para;</a></h2>
+<p><code>docs/spec/</code> is gitignored: the standards are free to download but are not redistributed here.
+The build does not need them — every table is already transcribed into the source. They are
+needed only to re-run the generators in <code>tools/</code>.</p>
+<p>To set that up, fetch:</p>
+<table>
+<thead>
+<tr>
+<th>Document</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ATSC A/52:2018</td>
+<td>The master standard. E-AC-3 is normative Annex E.</td>
+</tr>
+<tr>
+<td>ETSI TS 102 366</td>
+<td>Carries the EMDF metadata format in Annex H.</td>
+</tr>
+<tr>
+<td>ETSI TS 103 420</td>
+<td>Joint Object Coding.</td>
+</tr>
+<tr>
+<td><code>ts_103420v010201p0.zip</code></td>
+<td>The TS 103 420 companion archive. The JOC Huffman tables are in <code>ts_103420_tables.c</code> inside it, and nowhere in the PDF.</td>
+</tr>
+</tbody>
+</table>
+<p>Extract each PDF to page-marked text beside the PDF, with page separators of the form
+<code>===== PDF PAGE n =====</code>. The generators locate tables by page.</p>
+<h2 id="verified-configuration">Verified configuration<a class="headerlink" href="#verified-configuration" title="Permanent link">&para;</a></h2>
+<p>The Windows instructions in this document were run on:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Windows 11 Pro for Workstations 10.0.26200</td>
+</tr>
+<tr>
+<td>Compiler</td>
+<td>MSVC 14.51.36231 (Visual Studio 2026 Community)</td>
+</tr>
+<tr>
+<td>CMake</td>
+<td>≥ 3.28, Ninja generator</td>
+</tr>
+<tr>
+<td>Qt</td>
+<td>6.8.3 msvc2022_64</td>
+</tr>
+<tr>
+<td>vcpkg</td>
+<td>checkout at <code>D:/vcpkg</code></td>
+</tr>
+<tr>
+<td>FFmpeg</td>
+<td>8.0.1</td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.14.6</td>
+</tr>
+</tbody>
+</table>
+<p>Result: configure, build and <code>ctest</code> all clean — the full suite passes, windows-msvc and
+windows-llvm both.</p>
+<p>The Linux instructions were run on:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OS</td>
+<td>Ubuntu 26.04 (WSL2)</td>
+</tr>
+<tr>
+<td>Compilers</td>
+<td>GCC 15.2.0 and Clang 21.1.x, both tried</td>
+</tr>
+<tr>
+<td>CMake</td>
+<td>≥ 3.28, Ninja generator</td>
+</tr>
+<tr>
+<td>Qt</td>
+<td>6.10.2, apt-packaged (<code>qt6-base-dev</code>, <code>qt6-declarative-dev</code>)</td>
+</tr>
+<tr>
+<td>ALSA</td>
+<td><code>libasound2-dev</code>, both present and as the no-ALSA fallback — see <a href="#linux-audio">Linux audio</a></td>
+</tr>
+<tr>
+<td>PipeWire</td>
+<td><code>libpipewire-0.3-dev</code> 1.6.2, present and forced selected (<code>-DAC3FORGE_WITH_ALSA=OFF -DAC3FORGE_WITH_PIPEWIRE=ON</code>) — see <a href="#linux-audio">Linux audio</a></td>
+</tr>
+<tr>
+<td>vcpkg</td>
+<td>checkout at <code>/opt/vcpkg</code></td>
+</tr>
+</tbody>
+</table>
+<p>Result: configure, build and <code>ctest</code> all clean on both compilers, GUI and ALSA both included.
+The base suite is <code>ac3tests</code> and <code>ac3perf</code>'s Catch2 cases plus one ctest entry per example
+program; <code>AC3FORGE_WITH_ALSA</code>'s <code>tests/backend/alsa/</code> adds 14 entries (or, on a build that
+selected pipewire/ instead, <code>tests/backend/pipewire/</code> adds 5), and the GUI's Qt Quick
+Test harness (<code>ac3gui_qmltests</code>, <code>apps/gui/tests/CMakeLists.txt</code>) adds one more — unlike every
+other GUI-related target, that one harness <em>does</em> register its own <code>ctest</code> entry, gated on both
+<code>AC3FORGE_BUILD_GUI</code> and <code>AC3FORGE_BUILD_TESTS</code>. A Linux build with neither ALSA nor the GUI
+runs the base suite; with the GUI on and ALSA off it matches Windows exactly. <code>ac3gui --smoke</code>
+also runs clean headless (<code>QT_QPA_PLATFORM=offscreen</code>), encoding real audio and instantiating
+real QML channel meters. See <a href="#linux-audio">Linux audio</a> for what the ALSA verification did,
+and did not (real hardware), prove.</p>
+<p>linux-gcc, linux-llvm, linux-gcc-arm64, linux-llvm-arm64, linux-llvm-asan-ubsan, macos-llvm,
+static-analysis (clang-tidy), coverage (<code>tools/checks/coverage_report.sh</code> over every <code>src/</code> library
+component, via <code>config-linux-gcc-coverage</code>),
+adm-validate (the opt-in ADM module) and ffmpeg-validate all run on every push, as does
+build-android (the Shield app's debug APK) — the four Linux build legs install the same
+Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
+separate, CLI-only linux-llvm build that runs FFmpeg as an independent oracle against the full
+layout/tool/metadata option space (see
+<a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/CONTRIBUTING.md#oracles">CONTRIBUTING.md's Oracles section</a>) — a different question from the
+<a href="#gold-reference-correctness-gate">gold-reference gate</a> below, which every leg runs against one
+fixed sample to check output <em>quality</em>; ffmpeg-validate instead checks that every option
+combination produces a <em>structurally correct</em> stream at all, plus a numeric fidelity floor for
+the Annex E tool combinations the one fixed gold-reference sample does not itself exercise. No
+leg remains experimental.</p>
+<p>The coverage job gates line and branch coverage per library component, not as one blended
+number, using the same GCC 16 pin as the other Linux legs; the floor table, the measurement each
+floor was calibrated against, and why two components (<code>src/audio</code>'s device paths, <code>src/capi</code>'s
+E-AC-3 surface) are honestly floored low all live in <code>tools/checks/coverage_report.sh</code>, with the
+calibration history in the coverage job's own comment in <code>ci.yml</code>.</p>
+<p>No macOS host exists for this project, so <code>config-macos-llvm</code>/<code>config-macos-llvm-debug</code> are only
+ever exercised by CI (<code>macos-latest</code>, Apple Silicon) — never locally. That CI leg is green:
+configure, build and <code>ctest</code> all clean, using a Homebrew-installed LLVM
+(<code>cmake/toolchains/macos.llvm.toolchain.cmake</code> prefers it over Apple's bundled clang) rather than
+a version-pinned one — Homebrew's core <code>llvm</code> formula has no versioned sibling the way
+apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
+whatever Homebrew currently ships. The gold-reference correctness gate
+(<code>tools/checks/verify_gold_reference.sh</code> — see <a href="#gold-reference-correctness-gate">Gold-reference correctness gate</a>
+below) also passes: real SNR numbers from that CI run were 61.81/61.82 dB on macOS, against
+67.84/67.82 dB on Linux and Windows for the same material - a real but modest cross-compiler
+floating-point difference, comfortably clear of the 30 dB gate. <code>macos-llvm</code> now builds the GUI
+too (Homebrew's <code>qt</code> formula — see <a href="../platforms/macos/#gui-on-macos">GUI on macOS</a>), which adds
+<code>ac3gui_qmltests</code> to that same suite the same way it does on Linux: confirmed on a real run, 582
+ctest entries total, 100% passing, <code>ac3gui_qmltests</code> itself in 39.74s (56.81s for the whole
+suite) — the first time that number has existed for macOS at all, so there is no prior baseline
+to compare it against the way the ~15s Windows number has one. Getting there needed two real
+fixes, not just turning the option on: <code>QSG_RENDER_LOOP=basic</code> (<code>apps/gui/tests/CMakeLists.txt</code>,
+<code>APPLE</code> only) for a Qt Quick threaded-render-loop deadlock that hung the suite outright before a
+single test ran, and forcing the <code>Fusion</code> style in <code>qml_test_main.cpp</code> — matching what <code>main.cpp</code> already does —
+for a second, narrower hang in a native <code>ComboBox</code> populated by real capture-device data once a
+test entered live-session mode: the same native-style-under-offscreen fragility a comment in
+<code>apps/gui/qml/Main.qml</code> already documents one earlier instance of, on Windows, in a different
+control (a <code>Repeater</code>'s per-device <code>Button</code>, worked around there directly in QML rather than at
+the style level). See <code>apps/gui/tests/CMakeLists.txt</code> and <code>qml_test_main.cpp</code> for the full detail
+on both macOS fixes.</p>
+<p><code>src/audio/CMakeLists.txt</code> selects a real CoreAudio backend on macOS (<code>src/audio/src/backend/macos/</code>,
+built on the Audio HAL — <code>AudioObjectID</code>/<code>AudioDeviceIOProc</code> — the same layer WASAPI and ALSA
+occupy on their own platforms), not the no-backend stub it fell back to before. <code>AC3FORGE_BUILD_GUI</code>
+still defaults off there (<code>macos-llvm</code> opts it on in CI the same way the Linux legs do — see
+<a href="../platforms/macos/#gui-on-macos">GUI on macOS</a>) — capture, monitor playback and IEC 61937
+passthrough compile and link for real either way, and <code>ac3tests</code> exercises the backend's
+device-free logic (format matching, sample conversion) directly. What CI cannot exercise is a
+real device: the hosted runner enumerates
+whatever HAL objects macOS itself reports and touches nothing beyond that, same as ALSA's own
+"verified headless" story below — see <a href="#linux-audio">Linux audio</a> for the general shape of what
+that does and does not prove, and <a href="../platforms/macos/">macOS</a> for the backend's own header
+comments on where its research came from (three independent real-world CoreAudio passthrough
+implementations, surveyed since no Mac is available to try it on directly).</p>
+<p>The <code>-arm64</code> presets are exercised in CI on GitHub's hosted <code>ubuntu-24.04-arm</code> runner (real ARM
+hardware, not QEMU) and, separately, on a real Raspberry Pi 4B — see
+<a href="../platforms/raspberry-pi/#verified-configuration">Raspberry Pi</a> for the on-device numbers, which
+are tracked there rather than duplicated here since that page is the canonical source for
+Pi-specific hardware findings (real ALSA/HDMI device names, resolved compiler versions on Raspberry
+Pi OS, and so on).</p>
+<h2 id="gold-reference-correctness-gate">Gold-reference correctness gate<a class="headerlink" href="#gold-reference-correctness-gate" title="Permanent link">&para;</a></h2>
+<p><code>tools/checks/verify_gold_reference.sh</code> (invoked in CI on every leg except linux-llvm-asan-ubsan,
+which stays diagnostic-only) is the first real implementation of the project's original
+validation-pyramid design (now <a href="../verification/">docs/verification.md</a>), which had never been
+wired into CI before this: encode a fixed, checked-in 5.1 WAV
+(<code>tests/golden/audio/reference_51.wav</code>, synthesized once by <code>tools/generators/gen_gold_reference_wav.py</code> —
+independent of this codec's own encoder/decoder, not bootstrapped from one of our own encodes),
+strict-decode the result with FFmpeg (<code>-err_detect crccheck+bitstream+buffer+explode</code>, checked
+via stderr content rather than exit code — confirmed locally that ffmpeg's own process exits 0
+even on a CRC mismatch), decode it again with ac3cli's own decoder, and assert the two decodes
+agree via <code>tools/checks/compare_wav.py</code>'s delay-compensated SNR (stdlib-only Python, no numpy — every
+CI-hosted runner already ships Python 3, so this needs no new provisioning). The gate is
+perceptual/SNR-based rather than a bit-exact bitstream comparison deliberately: nothing in this
+project verifies that Homebrew LLVM, GCC and MSVC round the codec's floating-point
+pipeline identically, and the real numbers above show they in fact do not, by a small but
+measurable margin.</p>
+<p>This is a narrow, cross-platform <em>quality</em> check — one sample, two codecs, every OS — not a
+conformance sweep. <code>tools/checks/check_matrix_coverage.py</code>, <code>tools/ci/quality_race.py</code>'s <code>ci</code> mode and the
+rest of the <code>ffmpeg-validate</code> CI leg (Linux-only, see <a href="#verified-configuration">Verified configuration</a>
+above) cover the <em>correctness</em> question instead: does every layout, every Annex E tool token and
+every metadata option actually produce a structurally valid, spec-conformant stream, across the
+full option space this gate does not attempt.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

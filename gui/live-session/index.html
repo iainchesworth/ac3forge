@@ -1,0 +1,3125 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23">
+      
+      
+      
+        <link rel="canonical" href="https://iainchesworthlabs.github.io/ac3forge/gui/live-session/">
+      
+      
+        <link rel="prev" href="../objects-and-motion/">
+      
+      
+        <link rel="next" href="../source-assignment/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Live capture & session - ac3forge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#live-capture-session" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="ac3forge" class="md-header__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ac3forge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Live capture & session
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../concepts/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../verification/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Validation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../library/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cli/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  CLI reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  GUI guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="ac3forge" class="md-nav__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ac3forge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/raspberry-pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Raspberry Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/wasm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebAssembly (browser demo)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/ac3-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AC-3 & E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/atmos-joc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Atmos & JOC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/object-signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../library/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Library
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/encoding-ac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/encoding-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/decoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/spatial-and-atmos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spatial & Atmos objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/station-broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A worked scene — station broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/channel-plans-and-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel plans & routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/muxing-and-sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Muxing & sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/file-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/adm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM / BW64 reading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/adm-bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM → Atmos bridging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/header-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Header map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/c-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../cli/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/metadata-options/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GUI guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../loading-a-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Loading a source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../format-and-channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Format & channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../objects-and-motion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objects & motion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#starting-a-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting a capture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Starting a capture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-vbr-warning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The VBR warning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-device-capture-clock-master-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two-device capture: clock-master model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-live-session-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Live session tab
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#take-durability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Take durability
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#device-drop-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Device-drop detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#receiver-hot-swap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Receiver hot-swap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parallel-downmix-receiver-leg" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel downmix receiver leg
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switching-layout-mid-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Switching layout mid-session
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-assignment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-source & assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coding-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QC a stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../inspect-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../wasm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live decode demo (WASM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quality-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tool-comparison-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool comparison trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../landscape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci-self-hosted-runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Self-hosted CI runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#starting-a-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting a capture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Starting a capture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-vbr-warning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The VBR warning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#two-device-capture-clock-master-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two-device capture: clock-master model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-live-session-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Live session tab
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#take-durability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Take durability
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#device-drop-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Device-drop detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#receiver-hot-swap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Receiver hot-swap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parallel-downmix-receiver-leg" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel downmix receiver leg
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#switching-layout-mid-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Switching layout mid-session
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="live-capture-session">Live capture &amp; session<a class="headerlink" href="#live-capture-session" title="Permanent link">&para;</a></h1>
+<h2 id="starting-a-capture">Starting a capture<a class="headerlink" href="#starting-a-capture" title="Permanent link">&para;</a></h2>
+<p>The rail's <a href="../loading-a-source/#01-input">Input block</a>, switched to <strong>Live capture</strong>, is where
+devices get chosen (up to two, see <a href="#two-device-capture-clock-master-model">Two-device capture</a>
+below) and where the two signal-side acts live: <strong>Monitor</strong> (a session that writes nothing and
+asks for no filename — the meters and soundfield run against the real encoded signal, and checking
+a device never commits to a take) and <strong>Record…</strong> (capture straight to a file). Both act on the
+master device alone, the same as a single-device session. The rail keeps nothing else: a <em>real</em>
+session — one with a take on disk or a receiver leg — starts on the <strong>Live session</strong> tab's own
+<strong>Live session</strong> Card.</p>
+<p>The Card has two states. Idle, it is the pre-flight: a <strong>Receiver</strong> combo (<code>No passthrough</code> plus
+every enumerated output device), a <strong>Monitor</strong> checkbox (checked by default), an <strong>Also write the
+take to disk</strong> checkbox, a <strong>Raw-WAV safety copy</strong> checkbox — enabled only once write-to-disk is
+checked, see <a href="#take-durability">Take durability</a> below — and a highlighted <strong>Start session</strong>
+button, enabled whenever capture is available and nothing else is running. Checking write-to-disk
+makes Start session ask for a save path first, and the session starts once the dialog closes;
+unchecked, the session starts immediately and writes nothing. Running, the Card becomes the
+transport: a <strong>Stop session</strong> button, zero-padded RUNNING / FRAMES / DROPPED counters, and a
+disabled <strong>Also writing the take to disk</strong> readout, since that choice is made pre-flight and
+cannot change mid-session.</p>
+<p><img alt="The idle Live session card — receiver, monitor, write-to-disk and the highlighted Start session
+button" src="../screenshots/live-session-idle.png" /></p>
+<p>Starting a <em>real</em> session — a take on disk or a receiver leg wanted — focuses the tab; Monitor,
+however it is started, never steals the tab you are configuring.</p>
+<h3 id="the-vbr-warning">The VBR warning<a class="headerlink" href="#the-vbr-warning" title="Permanent link">&para;</a></h3>
+<p><a href="../format-and-channels/#rate-mode-constant-or-variable">Rate mode</a> lives on the Format tab,
+shared with plain file encoding — and it does not render at all while the live source is
+selected: a live session cannot honour it, so the control would only mislead. A VBR choice made
+earlier still exists, so the <strong>Live session</strong> tab's own Card carries a note in its idle state
+whenever VBR is on:</p>
+<p><img alt="The live-session VBR warning, now on the Live session tab's own
+card" src="../screenshots/live-session-vbr-note.png" /></p>
+<p>A live session always runs at the fixed bit rate, regardless of the rate mode: IEC 61937
+passthrough bursts are fixed-size per access unit, and nothing renegotiates burst framing
+mid-stream, so the VBR setting is dropped unconditionally before a session ever starts. The
+run entry a real session opens says so too — its rate text is always the fixed rate.</p>
+<div class="admonition note">
+<p class="admonition-title">No screenshot of an active session here</p>
+<p>The idle Card above is a real capture, taken against a running build with a genuine device
+enumerated on the machine. A session actually <em>running</em> is not shown: driving one would mean
+recording live audio through a microphone just to illustrate a UI state, so the running
+transport, the chain strip mid-run, the reconnection banner, and the Live room's live-only
+controls are described from the implementation rather than photographed.</p>
+</div>
+<h2 id="two-device-capture-clock-master-model">Two-device capture: clock-master model<a class="headerlink" href="#two-device-capture-clock-master-model" title="Permanent link">&para;</a></h2>
+<p>A session is capped at <strong>two</strong> capture devices. The rail's live branch is a per-device list,
+mirroring the file branch's own per-source list: one row per selected device — name,
+<code>N ch · 48 000 Hz</code>, <strong>Remove</strong> — plus <strong>Add input…</strong> (disabled at the cap, with a "two devices
+per session" note) and a totals line (<code>2 devices · 4 channels captured</code>). The first row is always
+the <strong>master</strong>; the second, when present, the <strong>slave</strong>.</p>
+<p><strong>Clock model.</strong> The master's delivery paces the session's frame loop exactly as in a
+single-device session. The slave is an independent capture, and there is no shared hardware
+clock between two WASAPI shared-mode endpoints, even nominally identical ones on the same PC:
+left alone, the slave's stream drifts against the master's a sample at a time. Two small,
+Qt-free, allocation-free library pieces (<code>src/audio/include/ac3/audio/resampler.hpp</code>) correct
+that:</p>
+<ul>
+<li><strong><code>ac3::audio::DriftResampler</code></strong> — a streaming linear-interpolation fractional resampler.
+  Linear interpolation, not a windowed-sinc design: at the drift magnitudes a free-running consumer
+  clock actually exhibits (tens of parts-per-million) linear interpolation's error sits far below
+  the codec's psychoacoustic floor, and at a genuine nominal-rate conversion (44.1 → 48 kHz) it
+  trades some high-frequency accuracy near Nyquist for an allocation-free, state-tiny
+  implementation appropriate to a live capture hot path. It carries only a fractional read position
+  between <code>render()</code> calls — no sample data of its own.</li>
+<li><strong><code>ac3::audio::ClockDriftEstimator</code></strong> — the servo that decides the resampler's ratio: a small
+  proportional controller steering the worker's own slave-side scratch FIFO back towards a target
+  occupancy (one frame period's worth), smoothed with a one-pole filter so the ratio moves in
+  small, audio-safe steps rather than jumping. <code>ratio()</code> is the nominal conversion
+  (<code>master_rate / slave_rate</code>, 1.0 when both devices run the same nominal rate) composed with the
+  measured correction; <code>drift_ppm()</code> is that correction alone, signed, zero until the servo has
+  seen data.</li>
+</ul>
+<p>Each frame period, after the master's own blocking capture-fill completes, the worker opportunistically
+drains whatever the slave's ring buffer holds (non-blocking — the master's wait already gave it
+roughly one frame period's worth of wall-clock time to deliver), feeds the FIFO's occupancy to the
+estimator, and resamples exactly <code>kSamplesPerFrame</code> slave frames to sit alongside the master's own.
+If the slave's nominal rate differs from the master's, the same resampler handles the nominal
+conversion and the drift correction together — one ratio, composed once per frame period.</p>
+<p><strong>Drift visibility.</strong> The Live session tab's chain capture cell shows the slave's <em>measured</em>
+correction — <code>slave −18 ppm</code> — updated with the same ~30 Hz cadence as every other live stat,
+empty (and the line hidden) outside a two-device session. Honest, not estimated ahead of time:
+it is the correction the resampler is actually applying.</p>
+<p><strong>Channel space.</strong> The flat capture-channel space object slots address gains the slave's channels
+after the master's — devices are sources, the same identity concept loaded files carry. The Live
+room's channel picker names each flat index (<code>Ch 1</code>… for the master, <code>Dev2 Ch 1</code>… for the slave),
+and per-slot bind/reassign (see <a href="../objects-and-motion/">Objects &amp; motion</a>) works the same across
+both devices — a slot simply addresses a wider space. A <strong>plain channel-mode session's bed still
+comes from the master alone</strong>: the routing's panning model treats a source's channel <em>count</em> as a
+specific named WAV speaker layout (§7.8), which has no sound meaning for two independent devices
+concatenated together, so there is no principled default position to auto-pan the slave's
+channels into. The slave's audio is still captured, drift-corrected, watched by its own silence
+watchdog and reflected in the drift readout either way — just not auto-routed into a bed position
+with no honest default.</p>
+<p><strong>Session plumbing.</strong> The second device is the rail's own selection state, not part of any one
+start request, so it persists across <a href="#switching-layout-mid-session">a layout-switcher
+restart</a> automatically. A bad or vanished slave (unplugged between
+selection and start) degrades non-fatally to an ordinary single-device session, the same
+low-ceremony treatment a failed monitor-sink open gets. The silence watchdog covers <strong>each</strong>
+device independently: either going silent for three seconds fails the session, and the failure
+text names the one that actually went quiet.</p>
+<p><strong>CLI parity.</strong> <code>ac3cli live</code> takes a trailing <code>capture2=&lt;index&gt;</code> token naming the second device,
+built on the same shared resampler and drift estimator — see
+<a href="../../cli/metadata-options/#live-options-live-capture2">CLI → Options &amp; grammars</a> for its grammar.
+The GUI's own command bar emits it whenever the rail has two devices selected, so the line stays
+honest.</p>
+<h2 id="the-live-session-tab">The Live session tab<a class="headerlink" href="#the-live-session-tab" title="Permanent link">&para;</a></h2>
+<p>The <strong>Live session</strong> tab exists whenever the live source is selected in the rail (Advanced and
+Expert) — it is where a session is <em>understood</em>, not a modal that only appears once one is
+already underway. It carries:</p>
+<ul>
+<li>A reconnection banner while the receiver re-locks to a new bitstream format — named after the
+  actual endpoint (<em>"Renegotiating with Denon AVR-X3800H."</em>), because the session knows exactly
+  who is re-locking. This fires for a session's own first passthrough open and for a
+  <a href="#receiver-hot-swap">receiver hot-swap</a> alike — either way about a second of audio is lost, and
+  the banner says so rather than hiding the dropout; a <strong>Skip</strong> dismisses it early for whoever can
+  hear the receiver has already settled.</li>
+<li>The transport row described above: Stop session, RUNNING/FRAMES/DROPPED, and the disabled
+  write-to-disk readout.</li>
+<li>A "chain" strip showing the three legs as separate plans: <strong>Capture</strong> (the actual device, with
+  its <code>2 ch · 48 000 Hz</code> sub-line) → <strong>Live encode</strong> (follows the picker — what the meters and
+  soundfield show, printed without a file suffix a session may never write) → <strong>Receiver leg —
+  IEC 61937</strong> (with the burst data type it is actually sending).</li>
+<li>A gap banner when the receiver leg carries less than the encode — three reasons reach it:
+  object mode against an E-AC-3-capable receiver (the leg is always just the 5.1 bed — a consumer
+  decoder gates object decoding regardless of what the receiver itself can bitstream), object mode
+  against an AC-3-only receiver (the leg is the <a href="#parallel-downmix-receiver-leg">parallel downmix</a>
+  of that same bed), and a wide channel layout against an AC-3-only receiver (the leg is a 5.1
+  downmix of the full layout). The banner text names whichever applies. A passthrough that was
+  asked for and did <em>not open</em> gets its own banner instead, carrying the reason — "everything past
+  what the leg carries" would be a lie when the leg carries nothing.</li>
+<li>A draggable <strong>Live room</strong> plan — the same object-placement view as
+  <a href="../objects-and-motion/">Objects &amp; motion</a> with its crosshair and wall names, active only in
+  Atmos mode, applying each drag to the running encode immediately — plus a read-only <strong>Objects
+  in this session</strong> chip list. A live Atmos session pre-allocates a fixed <em>budget</em> of object
+  slots at start — the combined capture channel count of both selected devices, held to at least
+  8 and at most 15 — baked into the encoder's construction and unable to change mid-session (that
+  is how JOC's own object count works), rather than the channel count exactly: a two-channel
+  device still gets eight slots to grow into, and past eight combined channels every slot starts
+  bound identity-wise (slot <em>i</em> fed by capture channel <em>i</em>). Which capture channel feeds which
+  slot is otherwise live and mutable: a channel-picker ComboBox naming every capture channel
+  (<code>Ch 1</code>…<code>Ch N</code> for the master, <code>Dev2 Ch 1</code>… for a selected slave — see
+  <a href="#two-device-capture-clock-master-model">Two-device capture</a>), plus <strong>Add</strong> (binds the next
+  free slot), <strong>Reassign selected</strong> (acts on whichever object the room has selected) and
+  <strong>Silence selected</strong> (detaches the selected object's capture channel) sit on the Card, visible
+  only while live. The <strong>OBJECTS IN THIS SESSION</strong> counter reads <code>N of M slots live</code> (bound slots
+  over the budget) while a session is running, and plain <code>N objects live</code> in the non-live,
+  file-loaded object-mode case. Beside the room, an x/y/z/latency readout grid tracks whichever
+  object is selected; latency starts as a two-frame estimate (one period to fill the capture
+  buffer, one to encode and hand off) and, once monitoring has run for about a second and the
+  pipeline's startup transients have passed, is replaced by the real measured capture-to-monitor
+  round trip — the label reads <code>~N ms measured</code> once that lands, and <code>~N ms est.</code> until then or
+  whenever monitoring is off, since there is nothing to time a round trip against.</li>
+<li>A <strong>Layout</strong> switcher and a receiver-reports card (see below). The same <strong>Receiver</strong> combo above
+  the Card serves both phases of a session: before Start it is the pre-flight pick; once live, an
+  explicit choice hot-swaps the passthrough leg instead of restarting anything — see
+  <a href="#receiver-hot-swap">Receiver hot-swap</a>. The reports card leads with two receiver-display
+  rows — <strong>Format</strong> and <strong>Input</strong> — above Lock, Underruns and Monitor. Both read the
+  ACTUAL leg on the wire, not the main plan: <code>DOLBY DIGITAL PLUS</code>/the full shape when the receiver
+  takes the main format, or <code>DOLBY DIGITAL</code>/<code>5.1</code> whenever the
+  <a href="#parallel-downmix-receiver-leg">parallel downmix leg</a> is the one actually carrying the signal.</li>
+</ul>
+<p>Real sessions also land in the <a href="../format-and-channels/">run history</a>: a take or a receiver leg
+opens a run entry (duration <code>live</code>), so a mid-session failure — including the device-drop
+watchdog's own, see <a href="#device-drop-detection">Device-drop detection</a> — has a chip and a banner to
+land on, and a finished take has a <strong>Show in folder</strong>. Monitor-only checks deliberately stay out
+of the history, watchdog failures included: only a take on disk or a receiver leg opens the entry
+in the first place.</p>
+<h2 id="take-durability">Take durability<a class="headerlink" href="#take-durability" title="Permanent link">&para;</a></h2>
+<p>A live session writes each encoded unit to disk as it is produced — never accumulating the whole
+take in memory to write once at the end, which would make an hour-long session unbounded memory
+and a crash lose everything captured.</p>
+<p>The output file opens before the session is marked live, so a bad destination path is refused up
+front exactly like a bad device choice — not discovered as a mid-take failure minutes in.</p>
+<p>What "writing incrementally" means depends on the container, but both write straight into the
+chosen file — there is no separate spool file for either:</p>
+<ul>
+<li><strong>Elementary stream</strong> (<code>.ac3</code> / <code>.ec3</code>): every byte written <em>is</em> the take, from the first frame
+  on — a crash leaves exactly what was captured, playable up to that point.</li>
+<li><strong>Matroska</strong> (<code>.mkv</code>): batch muxing needs the whole frame list to compute anything, which a
+  live session never has until it decides to stop — so this container instead pushes each unit
+  into an incremental Matroska writer (<code>matroska::Writer</code>, <code>src/matroska</code>) built for exactly this
+  case. Segment is written with EBML's reserved "unknown size" pattern, the standard way a
+  streamed Matroska declares a length it cannot know yet, and Duration is omitted for the same
+  reason — real players handle both the way they handle any other live-streamed Matroska. The
+  writer hands back a just-closed cluster's bytes on the (roughly one-per-second) pushes where
+  the time budget closes one, and nothing otherwise, so the session never holds more than one
+  cluster's worth of audio in memory regardless of how long it runs. A clean stop flushes the
+  trailing partial cluster; nothing else needs closing, since Segment's size was never written as
+  a real number to begin with. A crash truncates the take — whatever clusters had already reached
+  disk are complete, valid Matroska, so the <code>.mkv</code> itself plays up to that point: the same honest
+  "playable up to where it stopped" guarantee the elementary-stream path gives, not a companion
+  file to fold in by hand afterward.</li>
+</ul>
+<p>Both paths flush to disk roughly once a second (not per frame) rather than on every write.</p>
+<p>The Container combo's other four choices — S/PDIF, MP4, fragmented MP4/CMAF, MPEG-TS — fall into
+the elementary-stream path above during a live session, not their own: the Matroska writer is the
+only incremental muxer this project has, and the other containers' muxers are batch APIs that
+need the whole frame list up front — there is nothing to push a live unit into for any of them.
+So a live session with one of those four selected keeps writing the plain stream, exactly the
+file it would write with the combo left on Elementary stream; the container only changes what a
+<em>file</em> encode wraps it as afterward (see
+<a href="../format-and-channels/#presets-codec-bit-rate-container">Container</a>).</p>
+<p>There is also an optional <strong>raw-WAV safety copy</strong>: the pre-flight "Raw-WAV safety copy" checkbox
+is only consulted once the take is also being written to disk. When on, it streams the raw
+captured PCM — device channel order, unencoded, before any routing or mixing — to a sibling
+<code>.raw.wav</code> file through a streaming WAV writer (<code>ac3::io::WavStreamWriter</code>) that appends
+interleaved samples as they arrive and, like the take itself, periodically re-patches its RIFF
+header rather than only at close. Without that, a process kill mid-session leaves a WAV
+whose header still claims zero data bytes even though the file holds real audio — most readers
+trust the header's declared size over the file's actual length, so an unpatched header would make a
+real partial take <em>look</em> empty. Patching it every second or so means the worst a hard crash can do
+is undersell the last fraction of a second.</p>
+<h2 id="device-drop-detection">Device-drop detection<a class="headerlink" href="#device-drop-detection" title="Permanent link">&para;</a></h2>
+<p>The capture read loop runs a silence watchdog (<code>ac3::audio::SilenceWatchdog</code>) that tracks how
+long ago the last read attempt actually delivered audio, with a three-second timeout.</p>
+<p>Once that gap passes, the session stops as a failure, not a silent "still running": the status
+line and the failure banner name the device —</p>
+<blockquote>
+<p>"Microphone (Logitech StreamCam)" stopped delivering audio - the capture device may have been
+disconnected. Wrote 212 frames before it went quiet.</p>
+</blockquote>
+<p>— and that wording is what makes the failure banner's <strong>Choose another device</strong> action appear:
+the banner treats a failure as device-shaped when its text mentions a device, bitstreaming, or
+IEC 61937. For a real session, the run entry lands with status <code>failed</code> and its frame count. A
+monitor-only session that loses its device still stops and the status line still updates the same
+way — it just has no run chip or banner to land on, because monitor-only checks never open a run
+entry in the first place.</p>
+<h2 id="receiver-hot-swap">Receiver hot-swap<a class="headerlink" href="#receiver-hot-swap" title="Permanent link">&para;</a></h2>
+<p>Changing the <strong>Receiver</strong> combo on the Live session tab's own Card — or picking <code>No passthrough</code> —
+while a session is running does not stop the session. The swap closes whatever passthrough sink
+is open and opens a new one for the chosen endpoint, entirely on the session's own worker thread,
+between frames, so no two threads ever touch the sink at once. Capture and encode keep running
+uninterrupted through the swap — only the receiver leg blinks.</p>
+<p>A hot-swap that cannot open (the chosen endpoint refuses the current format) shows the same
+refusal text a fresh session's own first passthrough open uses — one open-and-explain path, not
+two copies of it. The reconnection banner ("Renegotiating with X… expect a second of silence")
+fires exactly as it does for a session's initial passthrough open: a hot-swap is a real
+exclusive-mode re-open too, so the same brief interruption applies.</p>
+<p>On the Live session tab, the same receiver combo serves both roles — before Start it is the
+pre-flight choice; once live, an explicit pick performs the hot-swap.</p>
+<p>This is a different act from <strong>switching layout</strong>, below: that still stops the whole session,
+applies the preset, and starts a fresh one; a hot-swap never stops anything, and only ever
+changes the receiver leg.</p>
+<h2 id="parallel-downmix-receiver-leg">Parallel downmix receiver leg<a class="headerlink" href="#parallel-downmix-receiver-leg" title="Permanent link">&para;</a></h2>
+<p>Passthrough is not all-or-nothing: an AC-3-only receiver during an E-AC-3 or Atmos session is not
+left with a bare "cannot bitstream" refusal and a silent amplifier while the encode, meters and
+monitor carry on. It gets a <strong>capped leg</strong> instead: a second, independent AC-3 encode running in
+the session's worker loop, alongside — never in place of — the main encode.</p>
+<p><strong>When it engages.</strong> Exactly when passthrough is wanted, the main plan needs E-AC-3 (any object
+session, or a wide channel layout), and the chosen receiver cannot take E-AC-3 but can take plain
+AC-3. A receiver that can take neither format is still a genuine refusal — the leg only ever
+turns a receiver limitation into sound, never papers over an actual open failure.</p>
+<p><strong>What it encodes.</strong> The leg carries no separate §7.8 fold-down math of its own: every layout
+here (5.1, 7.1, 5.1.4, 7.1.4) is built on a 5.1 bed, and the routing already renders each
+bed-position coded channel from the bed layout alone, once per frame for the main encode, using
+the plan's own <code>cmixlev</code>/<code>surmixlev</code> — so a wide session's first six coded channels are already a
+self-sufficient 5.1 downmix, and an Atmos session's bed is the same thing for object mode. The
+leg simply feeds those already-computed channels to a second AC-3 frame encoder — no separate
+fold to get right or keep in sync with the main one. Its bit rate is the main session's own rate
+reduced to the nearest legal Table 5.18 rung at or below 640.</p>
+<p><strong>Where it goes.</strong> The leg opens through the same passthrough path a session's initial open and a
+<a href="#receiver-hot-swap">receiver hot-swap</a> share, asking the device for plain AC-3 rather than
+whatever the main plan would have asked for, and describing itself distinctly
+(<code>Dolby Digital · 5.1 · &lt;name&gt;</code>, not the ordinary AC-3-session wording or Atmos's "5.1 bed only"
+text). There is still only <strong>one</strong> passthrough sink per session — the leg does not open a second
+device, it changes what the existing sink is asked to carry. A hot-swap re-runs the same
+capability check between frames: moving to an E-AC-3-capable receiver drops the leg and
+bitstreams the main format again; moving to an AC-3-only one spins the leg up.</p>
+<p><strong>Truthful UI.</strong> The chain's receiver cell, the Receiver reports Format/Input rows and the gap
+banner all read the <em>actual</em> leg rather than the main plan (see
+<a href="#the-live-session-tab">the Live session tab</a> above). The
+<a href="#switching-layout-mid-session">layout switcher's</a> legend says the same thing: a dotted layout is
+not a dead end, just capped to the 5.1 downmix rather than bitstreamed as encoded.</p>
+<h2 id="switching-layout-mid-session">Switching layout mid-session<a class="headerlink" href="#switching-layout-mid-session" title="Permanent link">&para;</a></h2>
+<p>The <strong>Layout — switching re-locks the receiver</strong> card offers the presets (5.1, 7.1, 5.1.4,
+7.1.4) — and the Format tab's own preset buttons do the same thing during a live session, per
+the design's interaction table. Picking one <em>stops the running session, applies the preset, and
+starts a new session with the same capture/monitor/receiver choices</em> — the deliberate
+stop-renegotiate-resume the reconnection banner narrates, not a silent switch, and not the lighter
+<a href="#receiver-hot-swap">receiver hot-swap</a> above, which never stops anything at all. The dots and the
+legend are derived from the <strong>actual receiver</strong>: against an AC-3-only endpoint, layouts past 5.1
+carry the dot and the legend names the device (<em>"Dotted layouts encode and meter fully — Denon
+AVR-X3800H bitstreams Dolby Digital only, so this receiver hears a 5.1 downmix of them."</em>) — with
+the <a href="#parallel-downmix-receiver-leg">parallel downmix leg</a> in place, a dotted layout is never a
+dead end: it still encodes and meters fully, the receiver just hears the capped 5.1 downmix rather
+than the layout itself. An E-AC-3-capable receiver bitstreams every layout as encoded, and the
+legend says that instead. The switcher refuses two states honestly: object mode (the layout is
+fixed at a 5.1 bed — the card says so) and a take being written to disk (a restart would clobber
+the first half of the file; stop the session and start a new take instead).</p>
+<p>This is the GUI equivalent of <code>ac3cli live</code>: capture → encode → optional live monitor and/or
+passthrough, running continuously and still writing the file <code>record</code> always has. See
+<a href="../../cli/commands/#live-hardware">CLI → Commands</a> for the command-line form, including the
+<code>live mode</code> distinction between <code>channels</code> and <code>atmos</code> — the GUI's Atmos-mode live room is that
+same <code>atmos</code> mode, with the timeline replaced by real-time motion. <strong>Two-device capture is at
+parity</strong> — <code>capture2=&lt;index&gt;</code> (see <a href="#two-device-capture-clock-master-model">Two-device capture</a>)
+uses the same shared <code>DriftResampler</code>/<code>ClockDriftEstimator</code> pair on both sides. <strong>Container choice
+is at parity too</strong> — <code>ac3cli record</code>/<code>ac3cli live</code> both take a <code>container=mkv</code> trailing token (see
+<a href="../../cli/metadata-options/#recordlive-options-record-live-containermkv">CLI → Options &amp;
+grammars</a>) that writes
+straight to Matroska in the one command, the same choice this page's own <a href="#take-durability">Take
+durability</a> section describes the GUI's Container combo making. The CLI reaches
+it with <code>matroska::mux()</code> rather than <code>matroska::Writer</code> — <code>record</code>/<code>live</code> already hold every frame
+in memory until the run ends (see the very next sentence), so there is nothing incremental to gain
+there the way there is for the GUI's own bounded-memory, mid-session-crash-safe take. The rest of
+the parity gap remains, worth being honest about: <code>ac3cli live</code> (<code>run_live</code> in <code>apps/cli/main.cpp</code>)
+still reserves and fills a <code>frames</code> vector across the whole run and writes it once at the end, has
+no device-drop watchdog, still pans exactly one object per capture channel with no add/reassign,
+and has no parallel downmix leg of its own (an AC-3-only receiver during an <code>atmos</code>/E-AC-3 CLI
+session still just gets the plain refusal) — none of this page's
+<a href="#take-durability">take durability</a>, <a href="#device-drop-detection">device-drop detection</a>, live
+object-slot budget, <a href="#receiver-hot-swap">receiver hot-swap</a>, or
+<a href="#parallel-downmix-receiver-leg">parallel downmix leg</a> has reached the CLI's <code>live</code> command beyond
+the two-device clock model and container choice itself.</p>
+<h2 id="next">Next<a class="headerlink" href="#next" title="Permanent link">&para;</a></h2>
+<p>That's the whole app. Back to <a href="../../concepts/">Concepts</a> for the standards this all
+implements, or <a href="../../library/">Library</a> to build something with <code>ac3::forge</code> directly.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

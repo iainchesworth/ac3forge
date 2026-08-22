@@ -1,0 +1,3521 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23">
+      
+      
+      
+        <link rel="canonical" href="https://iainchesworthlabs.github.io/ac3forge/releasing/">
+      
+      
+        <link rel="prev" href="../contributing/">
+      
+      
+        <link rel="next" href="../history/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Releasing - ac3forge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#releasing-ac3forge" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ac3forge" class="md-header__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ac3forge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Releasing
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../concepts/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../verification/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Validation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../library/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  CLI reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../gui/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  GUI guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ac3forge" class="md-nav__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ac3forge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/raspberry-pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Raspberry Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/wasm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebAssembly (browser demo)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/ac3-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AC-3 & E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/atmos-joc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Atmos & JOC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/object-signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../library/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Library
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/encoding-ac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/encoding-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/decoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/spatial-and-atmos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spatial & Atmos objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/station-broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A worked scene — station broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/channel-plans-and-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel plans & routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/muxing-and-sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Muxing & sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/file-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/adm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM / BW64 reading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/adm-bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM → Atmos bridging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/header-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Header map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/c-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../cli/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/metadata-options/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../gui/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GUI guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/loading-a-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Loading a source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/format-and-channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Format & channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/objects-and-motion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objects & motion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/live-session/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/source-assignment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-source & assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/coding-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/qc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QC a stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/inspect-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pre-release-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-release checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#option-a-tag-based-release-the-normal-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option A: tag-based release (the normal path)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#option-b-manual-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option B: manual dispatch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dry run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Post-release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vcpkg-port" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vcpkg port
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publishing-to-pypi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publishing to PyPI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#homebrew-formula-and-cask" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Homebrew formula and cask
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#winget-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        winget manifest
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#conan-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conan recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-gets-published" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What gets published
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provisioning-the-gpg-signing-key-optional-one-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning the GPG signing key (optional, one-time)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provisioning-the-android-release-keystore-optional-one-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning the Android release keystore (optional, one-time)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provisioning-the-android-object-signing-key-optional-one-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning the Android object-signing key (optional, one-time)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-a-download" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying a download
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-deliberately-not-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's deliberately not here
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wasm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live decode demo (WASM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quality-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-comparison-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool comparison trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../landscape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ci-self-hosted-runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Self-hosted CI runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pre-release-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-release checklist
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#option-a-tag-based-release-the-normal-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option A: tag-based release (the normal path)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#option-b-manual-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option B: manual dispatch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dry run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Post-release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vcpkg-port" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vcpkg port
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publishing-to-pypi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publishing to PyPI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#homebrew-formula-and-cask" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Homebrew formula and cask
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#winget-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        winget manifest
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#conan-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conan recipe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-gets-published" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What gets published
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provisioning-the-gpg-signing-key-optional-one-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning the GPG signing key (optional, one-time)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provisioning-the-android-release-keystore-optional-one-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning the Android release keystore (optional, one-time)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provisioning-the-android-object-signing-key-optional-one-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provisioning the Android object-signing key (optional, one-time)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-a-download" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying a download
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-deliberately-not-here" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's deliberately not here
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="releasing-ac3forge">Releasing ac3forge<a class="headerlink" href="#releasing-ac3forge" title="Permanent link">&para;</a></h1>
+<p>How to cut a release: what triggers <code>.github/workflows/release.yml</code>, what it produces, and how
+to set up the optional GPG signing key. Modelled on an earlier project's release process, with
+the parts that don't apply to ac3forge (APT/DNF repository publishing, a Docker image, a Home
+Assistant add-on) removed.</p>
+<h2 id="versioning">Versioning<a class="headerlink" href="#versioning" title="Permanent link">&para;</a></h2>
+<p>ac3forge derives its version from git tags, the same way aqualink-automate does.
+<code>cmake/GitVersionDerivation.cmake</code> runs <code>git describe --tags --match "v*"</code> <strong>before</strong>
+<code>project()</code> in the top-level <code>CMakeLists.txt</code> and feeds the result straight into
+<code>project(ac3forge VERSION ...)</code> - the tag is the single source of truth. Nothing in the tree
+hardcodes a version to bump by hand: not <code>CMakeLists.txt</code>, and not the root <code>vcpkg.json</code>, which
+carries no <code>"version"</code> field at all - per vcpkg's own schema that field is only required for a
+manifest describing a <em>library</em> (a port), and this one just declares this project's own
+build-time dependencies (Catch2, optionally Boost/Tracy). The staged port's <code>version-semver</code> is
+what actually tracks releases - see <a href="#vcpkg-port">vcpkg port</a> below.</p>
+<p>So the order is just:</p>
+<ol>
+<li>Merge to <code>main</code>.</li>
+<li>Tag.</li>
+<li>Sync <code>main</code> back into <code>develop</code>: <code>gh pr create --base develop --head main</code>, then merge it the
+   same way as any other PR. This isn't optional cleanup - <code>git describe --tags</code> walks ancestry
+   from HEAD, so a tag that exists only on <code>main</code>'s side of history is invisible to a <code>develop</code>
+   build. Skipping this step after the v0.6.0-beta.1 promotion (#180) left <code>develop</code> builds
+   reporting a stale <code>v0.5.0-beta.1-...</code> version - visible in <code>ac3gui</code>'s About dialog - until the
+   gap was closed with #192.</li>
+</ol>
+<p>No version-bump commit, no file to keep in sync - tagging <em>is</em> the release decision.</p>
+<p>Tags are strict SemVer 2.0.0: <code>vMAJOR.MINOR.PATCH[-(alpha|beta|rc).N]</code>, e.g. <code>v0.2.0</code> or
+<code>v0.2.0-beta.1</code>. A tag with a prerelease suffix (or the dispatch form's <code>prerelease</code> checkbox)
+marks the GitHub Release as a prerelease. The suffix also flows into the build: CMake's
+<code>project()</code> <code>VERSION</code> field can only hold the bare <code>X.Y.Z</code> (that's what <code>PROJECT_VERSION</code> and
+CPack's package version use), but the full tag - suffix included - is carried separately as
+<code>PROJECT_VERSION_FULL</code> and shows up as <code>ac3cli --version</code>'s <code>version_full</code> field.</p>
+<p>A checkout that can't see any <code>v*</code> tag (no history, or a shallow CI clone - see <code>_build.yml</code>'s
+<code>fetch_depth</code> input) falls back to version <code>0.0.0-dev</code> rather than failing the build. Ordinary
+CI legs stay shallow and always show that fallback; only <code>release.yml</code>'s tag-triggered or
+dispatched build fetches full history (or gets the version stamped directly via
+<code>-DDERIVED_VERSION_OVERRIDE=</code>) and shows the real one.</p>
+<h2 id="pre-release-checklist">Pre-release checklist<a class="headerlink" href="#pre-release-checklist" title="Permanent link">&para;</a></h2>
+<ol>
+<li>CI green on <code>main</code> for the commit you're about to tag.</li>
+<li>Releases must be <strong>cut from main</strong> - <code>resolve-version</code> checks this with
+   <code>git merge-base --is-ancestor</code> and fails otherwise (dry runs are exempt).</li>
+<li>Decide the tag.</li>
+</ol>
+<h2 id="option-a-tag-based-release-the-normal-path">Option A: tag-based release (the normal path)<a class="headerlink" href="#option-a-tag-based-release-the-normal-path" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>git<span class="w"> </span>pull<span class="w"> </span>origin<span class="w"> </span>main
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>git<span class="w"> </span>tag<span class="w"> </span>v0.2.0
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>v0.2.0
+</code></pre></div>
+<p>Prerelease: <code>git tag v0.2.0-beta.1 &amp;&amp; git push origin v0.2.0-beta.1</code>. Watch the run under
+Actions &gt; Release.</p>
+<h2 id="option-b-manual-dispatch">Option B: manual dispatch<a class="headerlink" href="#option-b-manual-dispatch" title="Permanent link">&para;</a></h2>
+<p>Actions &gt; Release &gt; Run workflow, fill in <code>version</code> (e.g. <code>v0.2.0</code>), <code>prerelease</code>, <code>dry_run</code>.
+The tag does not exist yet when the run starts; <code>resolve-version</code> fails fast if it already does.
+The <code>github-release</code> job pushes the tag itself, at the very end, only after
+build/package/sign/attest have all succeeded - so a failed dispatch run leaves nothing behind to
+clean up by hand for a real release. For a <strong>prerelease</strong> dispatch specifically, if the tag gets
+pushed but a later step still fails, <code>cleanup-failed-prerelease</code> deletes the orphaned tag
+automatically; a non-prerelease tag is left alone even on failure; deleting a version someone
+explicitly declared is a bigger surprise than a maintainer cleaning it up by hand.</p>
+<h2 id="dry-run">Dry run<a class="headerlink" href="#dry-run" title="Permanent link">&para;</a></h2>
+<p>Builds and packages every platform without tagging, signing, or publishing anything. Exempt
+from the cut-from-main guard, so it can
+run from any branch - use it to validate a packaging change before merging.</p>
+<h2 id="post-release">Post-release<a class="headerlink" href="#post-release" title="Permanent link">&para;</a></h2>
+<p><code>gh release create --generate-notes</code> drafts release notes from merged PRs/commits since the
+previous tag - a first draft only. Curating it to the established pattern is a required step,
+not optional polish:</p>
+<ol>
+<li>Update <a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md">CHANGELOG.md</a> first, if it isn't already current - a <code>## [x.y.z] -
+   YYYY-MM-DD</code> section (moved down from <code>## [Unreleased]</code> if the changes were already logged
+   there), <a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a> format. This is the
+   authoritative, human-curated record; the GitHub Release body mirrors it, not the other way
+   round.</li>
+<li>Write the GitHub Release body from that CHANGELOG.md section, in this order:</li>
+<li><code>## What's Changed</code> (first release) or <code>## What's Changed since v&lt;prev&gt;</code>.</li>
+<li>A one-line summary of the release.</li>
+<li>The changes as <code>###</code> subsections - grouped by subsystem, or as <em>Added</em>/<em>Changed</em>/<em>Fixed</em> -
+      with <strong>bold lead-in</strong> bullets in user-facing terms, mirrored from the CHANGELOG.md
+      section. A short release may use a flat bold-lead-in bullet list instead of subsections.</li>
+<li>An <code>## Artifacts</code> section: the packages listed under <a href="#what-gets-published">What gets
+      published</a> below, with their SHA-512 checksums, plus a pointer to
+      <code>ac3cli --help</code>/<a href="../quickstart/">docs/quickstart.md</a>.</li>
+<li><code>**Full Changelog**: …/compare/v&lt;prev&gt;...v&lt;this&gt;</code> (keep the one <code>--generate-notes</code>
+      produced; omit for the first release - there is no previous tag).</li>
+<li>For a prerelease, a trailing <code>&gt; **Pre-release.**</code> caveat blockquote noting the biggest
+      open gap (see <a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/CHANGELOG.md#known-gaps">Known gaps</a> in the matching CHANGELOG.md
+      section).</li>
+<li>Apply it:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>gh<span class="w"> </span>release<span class="w"> </span>edit<span class="w"> </span>vX.Y.Z<span class="o">[</span>-beta.N<span class="o">]</span><span class="w"> </span>--notes-file<span class="w"> </span>notes.md
+</code></pre></div>
+<ol>
+<li>Verify the release page has all expected artifacts, and that the curated notes render and
+   read well.</li>
+<li>Bump the four packaging manifests - each has its own <strong>Every release tag</strong> steps below, and
+   none of them happen automatically:
+   <a href="#vcpkg-port">vcpkg port</a>, <a href="#homebrew-formula-and-cask">Homebrew formula and cask</a>,
+   <a href="#winget-manifest">winget manifest</a>, <a href="#conan-recipe">Conan recipe</a>. Nothing in CI checks these
+   against the latest tag, so a release is not actually done until all four point at it - three
+   were caught stale for a full release cycle before this line existed.</li>
+</ol>
+<h2 id="vcpkg-port">vcpkg port<a class="headerlink" href="#vcpkg-port" title="Permanent link">&para;</a></h2>
+<p>A vcpkg port for <code>ac3forge</code> is staged in-tree at
+<a href="https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge"><code>packaging/vcpkg-port/ac3forge/</code></a>
+(<code>vcpkg.json</code>,
+<code>portfile.cmake</code>, <code>usage</code>) and is pending submission to the curated <code>microsoft/vcpkg</code> registry -
+see <a href="../library/">docs/library/index.md</a> for how a consumer uses it either
+way. It installs the library only (<code>ac3::forge</code>, plus <code>matroska::matroska</code>/<code>mp4::mp4</code>/
+<code>mpegts::mpegts</code> behind their own <code>matroska</code>/<code>mp4</code>/<code>mpegts</code> features - see
+<code>cmake/InstallLibrary.cmake</code>'s <code>AC3FORGE_BUILD_MATROSKA</code>/<code>AC3FORGE_BUILD_MP4</code>/
+<code>AC3FORGE_BUILD_MPEGTS</code>/<code>AC3FORGE_INSTALL_BOTH_LINKAGES</code> options), never the
+CLI/GUI/tests/examples/fuzzers, and never <code>ac3::forge_c</code> (<code>AC3FORGE_BUILD_CAPI</code> - see the note
+below). <code>ac3adm::ac3adm</code> (the ADM/BW64 reader) has no vcpkg feature and never will while it
+stays outside <code>find_package(ac3forge)</code> entirely - see <a href="../library/">docs/library/index.md</a>.</p>
+<p>None of the three container-writer features are on by default: a curated-registry port's
+<code>default-features</code> may only cover behaviors, not additional public APIs/targets/binaries (see
+<a href="https://learn.microsoft.com/vcpkg/contributing/maintainer-guide#default-features-should-enable-behaviors-not-apis">vcpkg's maintainer guide</a>)
+, and each of <code>matroska</code>/<code>mp4</code>/<code>mpegts</code> is exactly that. A plain <code>vcpkg install ac3forge</code>
+installs the codec only; opt in explicitly with <code>vcpkg install ac3forge[matroska,mp4,mpegts]</code> or
+any subset. The port also pins several build options a curated-registry review otherwise flags
+as uncontrolled: <code>AC3FORGE_BUILD_ADM</code>/<code>AC3FORGE_ENABLE_TRACY</code> explicitly OFF (already the
+project's own default, pinned so a future default change can't silently pull an undeclared
+dependency into this port), and <code>AC3FORGE_WITH_ALSA</code>/<code>AC3FORGE_WITH_PIPEWIRE</code> explicitly OFF -
+without that, this library-only build still probes the build machine's ambient ALSA/PipeWire
+installs (<code>src/audio/</code> is <code>add_subdirectory()</code>'d unconditionally outside Emscripten, not gated
+on <code>AC3FORGE_BUILD_CLI</code>/<code>AC3FORGE_BUILD_GUI</code>) even though <code>ac3::audio</code> is never installed or
+exported. <code>vcpkg.json</code> also declares <code>"supports": "!(android &amp; !arm64)"</code> - only <code>arm64-v8a</code>
+Android is a real target (see <a href="../platforms/android/">docs/platforms/android.md</a>); other Android
+architectures fail to build (<code>matroska</code>'s size comparisons assume a 64-bit <code>size_t</code>).</p>
+<p><code>ac3::forge_c</code> (roadmap F1) is deliberately excluded via <code>-DAC3FORGE_BUILD_CAPI=OFF</code> rather than
+exposed as a feature. Its <code>capiTargets</code> export used to require <code>forge_static</code> even when
+<code>AC3FORGE_INSTALL_BOTH_LINKAGES=OFF</code> left that target unexported - a real bug independent of
+vcpkg, fixed in <code>cmake/InstallLibrary.cmake</code> by exporting <code>forge_static</code> alongside <code>forge_shared</code>
+in that branch whenever <code>AC3FORGE_BUILD_CAPI</code> is <code>ON</code> (#227). The port keeps
+<code>AC3FORGE_BUILD_CAPI=OFF</code> regardless: <code>ac3::forge_c</code> was never part of its documented scope, and
+with the export-set bug gone, revisiting that is now a scope decision rather than a bug
+workaround - add a same-named <code>capi</code> feature to <code>vcpkg.json</code> and <code>portfile.cmake</code>'s
+<code>vcpkg_check_features()</code> call (its <code>AC3FORGE_BUILD_CAPI</code> CMake option and
+<code>cmake/InstallLibrary.cmake</code> guard already exist) and document it in
+<a href="../library/">docs/library/index.md</a>, same as <code>matroska</code>/<code>mp4</code>/<code>mpegts</code> each did.</p>
+<p>Any future optional library component follows the same three-step recipe this repo's own
+<code>AC3FORGE_BUILD_&lt;NAME&gt;</code> options already establish: add the CMake option and its
+<code>cmake/InstallLibrary.cmake</code> guard first (that part isn't vcpkg-specific), then add a same-named
+feature to <code>packaging/vcpkg-port/ac3forge/vcpkg.json</code> and one line to <code>portfile.cmake</code>'s
+<code>vcpkg_check_features()</code> call.</p>
+<p><strong>Every release tag, once the port has been merged upstream</strong>, needs a follow-up PR to
+<code>microsoft/vcpkg</code> - the curated registry has no mechanism to track a moving <code>main</code>, so a new
+<code>ac3forge</code> release is invisible to <code>vcpkg install</code> until this happens:</p>
+<ol>
+<li>Bump <code>packaging/vcpkg-port/ac3forge/vcpkg.json</code>'s <code>version-semver</code> to the new tag, and
+   <code>portfile.cmake</code>'s <code>vcpkg_from_github()</code> <code>REF</code>/<code>SHA512</code> to match (<code>sha512sum</code> the tag's
+   release tarball, or let a first <code>vcpkg install</code> attempt report the correct hash).</li>
+<li>Validate locally first (see below) before touching the upstream fork - a portfile change
+   that fails vcpkg's own CI is slower to iterate on there than here.</li>
+<li>Copy the updated port files into the <code>microsoft/vcpkg</code> fork's <code>ports/ac3forge/</code>, run
+   <code>vcpkg format-manifest ports/ac3forge/vcpkg.json</code> (its formatting is stricter than this
+   repo's own JSON style - <code>vcpkg x-add-version</code> refuses to run against an unformatted
+   manifest) followed by <code>vcpkg x-add-version ac3forge</code> to regenerate
+   <code>versions/baseline.json</code>/<code>versions/a-/ac3forge.json</code> (don't hand-edit these), and open the
+   version-bump PR.</li>
+</ol>
+<p><strong>Validating the port locally</strong>, any time <code>packaging/vcpkg-port/ac3forge/</code> or the CMake options
+it drives change (whether or not a release is involved):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vcpkg<span class="w"> </span>install<span class="w"> </span>ac3forge<span class="w"> </span>--classic<span class="w"> </span>--overlay-ports<span class="o">=</span>packaging/vcpkg-port<span class="w"> </span>--triplet<span class="w"> </span>x64-windows
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>vcpkg<span class="w"> </span>install<span class="w"> </span>ac3forge<span class="w"> </span>--classic<span class="w"> </span>--overlay-ports<span class="o">=</span>packaging/vcpkg-port<span class="w"> </span>--triplet<span class="w"> </span>x64-windows-static
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>vcpkg<span class="w"> </span>install<span class="w"> </span>ac3forge<span class="o">[</span>matroska,mp4,mpegts<span class="o">]</span><span class="w"> </span>--classic<span class="w"> </span>--overlay-ports<span class="o">=</span>packaging/vcpkg-port<span class="w"> </span>--triplet<span class="w"> </span>x64-windows
+</code></pre></div>
+<p><code>--classic</code> is required from inside this repo - the root <code>vcpkg.json</code> (manifest mode, for this
+project's <em>own</em> build-time dependencies) would otherwise shadow the package-name argument.
+Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that the bare
+<code>ac3forge</code> install genuinely excludes <code>matroska::matroska</code>/<code>mp4::mp4</code>/<code>mpegts::mpegts</code> - not
+just unlinked, no matching files anywhere in the install tree - while
+<code>ac3forge[matroska,mp4,mpegts]</code> installs all three.</p>
+<p>Fetching a real tag only exercises whatever <code>AC3FORGE_BUILD_*</code> options actually existed in that
+tagged source - <code>vcpkg_from_github()</code>'s <code>REF</code> always points at an already-released tag, so a
+CMake option added since the last tag (as happened here: <code>AC3FORGE_BUILD_MP4</code>/
+<code>AC3FORGE_BUILD_MPEGTS</code> landed in <code>develop</code> after <code>v0.5.0-beta.1</code>) can't be exercised through a
+real fetch until the <em>next</em> tag contains it. To validate a port change against unreleased CMake
+options, temporarily swap the <code>vcpkg_from_github()</code> block in a scratch copy of <code>portfile.cmake</code>
+for <code>set(SOURCE_PATH "&lt;absolute path to this checkout&gt;")</code>, run the same three commands against
+that scratch copy, and discard it once validated - never commit that substitution.</p>
+<h2 id="publishing-to-pypi">Publishing to PyPI<a class="headerlink" href="#publishing-to-pypi" title="Permanent link">&para;</a></h2>
+<p>Roadmap <strong>F2</strong>: Python bindings (<code>python/</code>, see
+<a href="../library/python-api/">docs/library/python-api.md</a>) as the <code>ac3forge</code> PyPI package, with wheels
+for Windows, macOS and Linux built by <code>.github/workflows/wheels.yml</code> via <code>cibuildwheel</code>. That
+workflow's <code>build</code> job runs continuously (every push/PR touching <code>python/**</code>, same "buildable is
+checked continuously" reasoning as <code>windows-msvc</code>'s packaging smoke test above) and always
+uploads the wheels it builds as a workflow artifact — that part needs no provisioning and already
+works today.</p>
+<p><strong>Publishing them to PyPI is off until a maintainer provisions it</strong>, the same shape as GPG signing
+and the Android release keystore below: <code>wheels.yml</code>'s <code>publish</code> job is gated on both a <code>v*</code> tag
+push and the <code>pypi</code> GitHub environment existing, and uses
+<a href="https://docs.pypi.org/trusted-publishers/">PyPI trusted publishing</a> (OIDC) rather than a stored
+API token — there is no <code>PYPI_API_TOKEN</code> secret to leak in the first place. <strong>Nobody should ever
+generate a long-lived PyPI API token and paste it into a chat with an agent or into a GitHub
+secret</strong> — trusted publishing exists specifically so that never has to happen.</p>
+<p>One-time setup, done by a maintainer directly on pypi.org and on GitHub:</p>
+<ol>
+<li>On PyPI, either publish the very first <code>ac3forge</code> release by hand (<code>python -m build python/</code>
+   then <code>twine upload</code>, using a temporary scoped token deleted immediately after) to create the
+   project, or use PyPI's <strong>pending publisher</strong> mechanism (Your projects → Publishing →
+   "Add a pending publisher") to pre-register the trusted publisher for a project name that does
+   not exist yet — the second path needs no manual upload at all and is the one to prefer.</li>
+<li>Either way, register the trusted publisher against this repository: owner
+   <code>iainchesworthlabs</code>, repository <code>ac3forge</code>, workflow <code>wheels.yml</code>, environment <code>pypi</code>.</li>
+<li>In the GitHub repo, create an environment named <code>pypi</code> (Settings → Environments) — no secrets
+   need adding to it; its existence and name are what PyPI's trusted-publisher registration keys
+   against, and <code>wheels.yml</code>'s <code>publish</code> job declares <code>environment: pypi</code> so the job has somewhere
+   to request the OIDC token from. Optionally add required reviewers on the environment for a
+   manual approval gate before a publish actually runs.</li>
+</ol>
+<p>Once both sides are set up, pushing a <code>v*</code> tag (the same tag that triggers <code>release.yml</code>, see
+<a href="#option-a-tag-based-release-the-normal-path">Option A</a> above) also triggers <code>wheels.yml</code>'s
+<code>publish</code> job for that tag. Until then, the job's <code>environment: pypi</code> reference simply has
+nowhere to authorize against and the workflow run for that job fails cleanly at the permission
+check — the <code>build</code> job (and its artifact) is unaffected either way.</p>
+<h2 id="homebrew-formula-and-cask">Homebrew formula and cask<a class="headerlink" href="#homebrew-formula-and-cask" title="Permanent link">&para;</a></h2>
+<p>A Homebrew formula for <code>ac3cli</code> is staged in-tree at
+<a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Formula/ac3forge.rb"><code>packaging/homebrew/Formula/ac3forge.rb</code></a>
+and is pending publication to a personal tap (<code>homebrew-ac3forge</code>) - see
+<a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/README.md"><code>packaging/homebrew/README.md</code></a>
+for why a personal tap rather than a <code>homebrew-core</code> submission. Unlike the vcpkg port, this
+packages the CLI (<code>ac3cli</code>), not the library: <code>AC3FORGE_BUILD_CLI=ON</code> with GUI/tests/examples/
+fuzzers off, built from the release source tarball.</p>
+<p>The GUI (<code>ac3gui</code>) is a separate Homebrew Cask,
+<a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Casks/ac3gui.rb"><code>packaging/homebrew/Casks/ac3gui.rb</code></a>
+- a Cask, not a Formula, is the right shape for a bundled, prebuilt <code>.app</code> the way <code>ac3gui.app</code>
+already ships in every platform's release archive (<code>cmake/Packaging.cmake</code>'s DragNDrop <code>.dmg</code> on
+macOS). It's staged the same way the formula is. <code>v0.8.0-beta.2</code> is the first tagged release
+whose macOS build actually contains <code>ac3gui</code> - <code>macos-llvm</code> only started building the GUI at all
+once <a href="../platforms/macos/#gui-on-macos">GUI on macOS</a> landed - so the cask's <code>version</code>/<code>sha256</code>
+are now pinned from a real release rather than placeholders; see the cask file's own header
+comment.</p>
+<p><strong>Every release tag</strong> needs a follow-up update to the formula, same shape as the vcpkg port's:</p>
+<ol>
+<li>Bump <code>packaging/homebrew/Formula/ac3forge.rb</code>'s <code>url</code> to the new tag and <code>sha256</code> to match
+   (<code>sha256sum</code> the tag's release tarball - the same tarball the vcpkg port's <code>SHA512</code> already
+   points at, just a different digest algorithm).</li>
+<li>Validate locally first (see below) before touching a tap - a formula change that fails
+   <code>brew audit</code> is slower to iterate on there than here.</li>
+<li>Copy the updated formula into the <code>homebrew-ac3forge</code> tap's <code>Formula/ac3forge.rb</code> and push.</li>
+</ol>
+<p>The same three steps apply to the cask now that it tracks a real release too: bump <code>version</code> to
+the new tag and <code>sha256</code> to the release's <code>ac3forge-*-Darwin.dmg</code> (<code>sha256sum</code> it, or trust
+CPack's own published <code>.dmg.sha512</code> after converting digest algorithms), validate locally, then
+copy <code>packaging/homebrew/Casks/ac3gui.rb</code> into the tap's <code>Casks/ac3gui.rb</code> and push - both files
+ship from the same tap.</p>
+<p><strong>Validating the formula locally</strong>, from a macOS machine with Homebrew installed:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>brew<span class="w"> </span>install<span class="w"> </span>--build-from-source<span class="w"> </span>./packaging/homebrew/Formula/ac3forge.rb
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>brew<span class="w"> </span><span class="nb">test</span><span class="w"> </span>ac3forge
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>brew<span class="w"> </span>audit<span class="w"> </span>--formula<span class="w"> </span>./packaging/homebrew/Formula/ac3forge.rb
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>brew<span class="w"> </span>uninstall<span class="w"> </span>ac3forge
+</code></pre></div>
+<p><strong>Validating the cask locally</strong>, the same way, once you have a macOS machine with Homebrew
+installed - not yet run for real, same caveat as the formula above:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>brew<span class="w"> </span>audit<span class="w"> </span>--cask<span class="w"> </span>./packaging/homebrew/Casks/ac3gui.rb
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>brew<span class="w"> </span>install<span class="w"> </span>--cask<span class="w"> </span>./packaging/homebrew/Casks/ac3gui.rb
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>brew<span class="w"> </span>uninstall<span class="w"> </span>--cask<span class="w"> </span>ac3gui
+</code></pre></div>
+<p>There is no Homebrew on any of this project's CI runners or on Windows/Linux dev machines, so
+this validation is manual and macOS-only - there is nothing here to automate against, unlike
+the vcpkg <code>--overlay-ports</code> flow above.</p>
+<h2 id="winget-manifest">winget manifest<a class="headerlink" href="#winget-manifest" title="Permanent link">&para;</a></h2>
+<p>A winget manifest for <code>ac3forge</code> (<code>ac3cli</code> and <code>ac3gui</code> together, from the existing release
+<code>.zip</code>) is staged in-tree at
+<a href="https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/winget/manifests"><code>packaging/winget/manifests/</code></a>,
+at the exact <code>manifests/&lt;first-letter&gt;/&lt;publisher&gt;/&lt;package&gt;/&lt;version&gt;/</code> path a
+<code>microsoft/winget-pkgs</code> submission uses, so the version directory can be copied straight into a
+fork of that repo. It uses <code>InstallerType: zip</code> with <code>NestedInstallerType: portable</code> against the
+release's <code>ac3forge-X.Y.Z-win64.zip</code> rather than a dedicated installer - that archive already
+contains both <code>bin/ac3cli.exe</code> and <code>bin/ac3gui.exe</code> (CPack's <code>runtime</code> component - see <a href="#what-gets-published">What
+gets published</a> below), and this release doesn't produce an NSIS <code>.exe</code>
+(<code>makensis</code> wasn't on the runner - see <code>cmake/Packaging.cmake</code>). If a future release does
+produce one, switch <code>InstallerType</code> to <code>nullsoft</code> and drop <code>NestedInstallerType</code>/
+<code>NestedInstallerFiles</code> at that point rather than keeping both paths maintained.</p>
+<p><strong>Every release tag</strong> needs a new version directory, since winget-pkgs versions each release
+independently rather than tracking a moving tag the way vcpkg's <code>version-semver</code> does:</p>
+<ol>
+<li>Copy <code>packaging/winget/manifests/i/iainchesworthlabs/ac3forge/&lt;prev-version&gt;/</code> to a new
+   <code>&lt;new-version&gt;/</code> directory, updating <code>PackageVersion</code> in all three files to match.</li>
+<li>Update the installer manifest's <code>InstallerUrl</code> to the new release's <code>win64.zip</code> and
+   <code>InstallerSha256</code> to match (<code>sha256sum</code> the zip - winget wants SHA256, unlike the
+   <code>SHA512SUMS</code> <code>release.yml</code> publishes for every artifact, see <a href="#what-gets-published">What gets
+   published</a> below).</li>
+<li>Validate locally first (see below) before touching a fork.</li>
+<li>Copy the new version directory into the <code>microsoft/winget-pkgs</code> fork at the matching
+   <code>manifests/i/iainchesworthlabs/ac3forge/&lt;new-version&gt;/</code> path and open the submission PR.</li>
+</ol>
+<p><strong>Validating the manifest locally</strong>, with the <code>winget</code> CLI (ships with Windows 10/11):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>winget<span class="w"> </span>validate<span class="w"> </span>--manifest<span class="w"> </span>packaging/winget/manifests/i/iainchesworthlabs/ac3forge/&lt;version&gt;
+</code></pre></div>
+<h2 id="conan-recipe">Conan recipe<a class="headerlink" href="#conan-recipe" title="Permanent link">&para;</a></h2>
+<p>A Conan (2.x) recipe for <code>ac3forge</code> is staged in-tree at
+<a href="https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan"><code>packaging/conan/</code></a>
+(<code>conanfile.py</code>, <code>conandata.yml</code>, <code>test_package/</code>) and is pending submission to ConanCenter
+(<code>conan-center-index</code>). Scoped the same as the vcpkg port - the library only (<code>ac3::forge</code>,
+plus <code>matroska::matroska</code>/<code>mp4::mp4</code>/<code>mpegts::mpegts</code> behind their own default-on <code>matroska</code>/
+<code>mp4</code>/<code>mpegts</code> options), never the CLI/GUI/tests/examples/fuzzers - with one Conan option per
+<code>AC3FORGE_BUILD_&lt;NAME&gt;</code> CMake option, the same pattern the vcpkg port's <code>vcpkg_check_features()</code>
+call already establishes. Rather than asking Conan's <code>CMakeDeps</code> generator to synthesise a
+second CMake package config, the recipe sets <code>cmake_find_mode</code> to <code>"none"</code> and points consumers
+at the config <code>cmake/InstallLibrary.cmake</code> already installs - see <code>conanfile.py</code>'s
+<code>package_info()</code> comment. A consumer's <code>find_package(ac3forge CONFIG REQUIRED)</code> and
+<code>target_link_libraries(main PRIVATE ac3::forge)</code> calls are identical to the vcpkg or plain
+<code>cmake --install</code> case (see <a href="../library/">docs/library/index.md</a>), Conan or not.</p>
+<p><strong>Every release tag</strong>, once the recipe has been merged upstream, needs a follow-up PR to
+<code>conan-center-index</code> - ConanCenter has no mechanism to track a moving <code>main</code> either, same as
+vcpkg's curated registry:</p>
+<ol>
+<li>Add a new entry to <code>packaging/conan/conandata.yml</code>'s <code>sources</code> map, keyed by the new
+   version, with the tag's release tarball <code>url</code> and <code>sha256</code> (same tarball the vcpkg port's
+   <code>SHA512</code> and the Homebrew formula's <code>sha256</code> already point at, just fetched fresh).</li>
+<li>Validate locally first (see below) before touching the upstream fork.</li>
+<li>Copy the updated recipe into the <code>conan-center-index</code> fork's <code>recipes/ac3forge/</code>, add the
+   new version to that recipe's own <code>config.yml</code>, and open the version-bump PR.</li>
+</ol>
+<p><strong>Validating the recipe locally</strong>, any time <code>packaging/conan/</code> or the CMake options it drives
+change (whether or not a release is involved):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>conan<span class="w"> </span>create<span class="w"> </span>packaging/conan<span class="w"> </span>--version<span class="w"> </span>&lt;version&gt;<span class="w"> </span>-s<span class="w"> </span>compiler.cppstd<span class="o">=</span><span class="m">23</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>conan<span class="w"> </span>create<span class="w"> </span>packaging/conan<span class="w"> </span>--version<span class="w"> </span>&lt;version&gt;<span class="w"> </span>-s<span class="w"> </span>compiler.cppstd<span class="o">=</span><span class="m">23</span><span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;&amp;:shared=True&quot;</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>conan<span class="w"> </span>create<span class="w"> </span>packaging/conan<span class="w"> </span>--version<span class="w"> </span>&lt;version&gt;<span class="w"> </span>-s<span class="w"> </span>compiler.cppstd<span class="o">=</span><span class="m">23</span><span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;&amp;:matroska=False&quot;</span><span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;&amp;:mp4=False&quot;</span><span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;&amp;:mpegts=False&quot;</span>
+</code></pre></div>
+<p><code>-s compiler.cppstd=23</code> is required - a bare default profile's <code>compiler.cppstd</code> predates
+C++23 on most Conan installs, and <code>check_min_cppstd(self, 23)</code> in <code>conanfile.py</code> fails fast
+rather than configuring a build that would fail deep inside compilation instead. Each command
+above builds <code>test_package/</code>, which links <code>ac3::forge</code> and runs it, exercising the exact
+<code>find_package(ac3forge)</code> path a real consumer uses - a passing <code>conan create</code> is a stronger
+signal than a configure-only check for that reason. Fetching a real tag only exercises whatever
+<code>AC3FORGE_BUILD_*</code> options actually existed in that tagged source, same caveat as the vcpkg
+port's local-source-override technique above - <code>packaging/conan/conandata.yml</code> would need the
+same scratch-entry treatment (a local <code>url</code> pointing at this checkout instead of a GitHub
+tarball) to validate a CMake option added since the last tag.</p>
+<h2 id="what-gets-published">What gets published<a class="headerlink" href="#what-gets-published" title="Permanent link">&para;</a></h2>
+<p>One package per OS <strong>and architecture</strong>, not one per compiler-toolchain leg: <code>_build.yml</code>'s matrix
+builds and tests both Windows toolchains (MSVC, clang-cl) and both Linux toolchains (GCC, Clang) - on
+both x64 and arm64 for Linux - on every push, but only the leg marked <code>release_package: true</code> per
+OS/arch actually packages for a release - windows-msvc, linux-gcc, linux-gcc-arm64 and macos-llvm.
+windows-llvm, linux-llvm and linux-llvm-arm64 still catch compiler-specific bugs in full, every push;
+they just don't produce a second, redundantly canonical archive that a downloader would have no way
+to choose between. <code>cmake/Packaging.cmake</code> arch-qualifies the Linux archive filename
+(<code>ac3forge-X.Y.Z-Linux-x86_64.tar.gz</code> vs. <code>...-Linux-aarch64.tar.gz</code>) specifically so the two Linux
+architectures' TGZ/ZIP downloads never collide; DEB/RPM already carry their arch in their own
+filenames.</p>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Arch</th>
+<th>Leg</th>
+<th>End-user packages</th>
+<th>Library (<code>ac3forge-dev-*</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td>x64</td>
+<td>windows-msvc</td>
+<td><code>.zip</code>, <code>.exe</code> (NSIS, if <code>makensis</code> is on the runner)</td>
+<td><code>.zip</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>x86_64</td>
+<td>linux-gcc</td>
+<td><code>.tar.gz</code>, <code>.deb</code>, <code>.rpm</code></td>
+<td><code>.tar.gz</code>, plus real system packages: <code>libac3forge0</code>/<code>ac3forge-devel</code> (RPM) and <code>libac3forge0</code>/<code>libac3forge-dev</code> (DEB)</td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>aarch64 (Raspberry Pi 4/5 and other arm64 targets)</td>
+<td>linux-gcc-arm64</td>
+<td><code>.tar.gz</code>, <code>.deb</code>, <code>.rpm</code></td>
+<td>same split as x86_64, above</td>
+</tr>
+<tr>
+<td>macOS</td>
+<td>arm64 (Apple Silicon)</td>
+<td>macos-llvm</td>
+<td><code>.tar.gz</code>, <code>.dmg</code></td>
+<td><code>.tar.gz</code></td>
+</tr>
+<tr>
+<td>Android (Shield)</td>
+<td>arm64 (NDK)</td>
+<td>build-android</td>
+<td><code>.apk</code></td>
+<td>none - Shield links <code>ac3::forge</code>/<code>ac3::audio</code> in-tree, it isn't a <code>find_package(ac3forge)</code> consumer</td>
+</tr>
+</tbody>
+</table>
+<p>The end-user packages are <code>ac3cli</code>/<code>ac3gui</code> (CPack's <code>runtime</code> component) on desktop, or the
+Shield app's <code>.apk</code> on Android. The library packages are a second, independent download for a
+third party consuming <code>ac3::forge</code>/<code>matroska::matroska</code> via <code>find_package(ac3forge)</code> (see
+<a href="../library/">docs/library/index.md</a>) - headers, static and shared libraries, and the
+CMake package config, but neither <code>ac3cli</code>/<code>ac3gui</code> nor <code>ac3::audio</code> (live capture/monitor/
+passthrough stays a CLI/GUI-internal detail, not part of what's installed here).</p>
+<p>Archive downloads (ZIP/TGZ) bundle everything above into one <code>ac3forge-dev-*</code> file, one per
+platform regardless of compiler leg, same reasoning as the end-user package above - not NSIS (a
+component installer can't also produce a second standalone download), not DragNDrop (no macOS
+host to build or verify it against at all).</p>
+<p>Linux additionally gets a <strong>real runtime/<code>-dev</code> split</strong> as proper system packages, not just an
+archive: <code>cmake/InstallLibrary.cmake</code> files the shared libraries' versioned <code>.so</code> under its own
+CPack component (<code>libruntime</code>, split out via <code>NAMELINK_COMPONENT</code> - see that file's comment),
+separate from headers/static-archives/CMake-config/namelink-symlink (<code>library</code>). DEB/RPM's own
+component-install switches turn that into three independent packages - <code>ac3forge</code> (the CLI/GUI),
+<code>libac3forge0</code> (just the <code>.so</code> a linked binary loads), and <code>libac3forge-dev</code>/<code>ac3forge-devel</code>
+(everything a builder needs, version-pinned to depend on the exact matching <code>libac3forge0</code>) -
+the same <code>libFOO</code>/<code>libFOO-dev</code> shape as any other Linux C library, installable with a plain
+<code>apt install</code>/<code>dnf install</code> rather than a manual archive download. ZIP/TGZ still produce one
+merged <code>ac3forge-dev-*</code> archive as before (<code>cmake/Packaging.cmake</code> groups <code>library</code>+<code>libruntime</code>
+together for the archive generators; <code>cmake/CPackProjectConfig.cmake</code> overrides that back apart
+for DEB/RPM specifically). Confirmed against real <code>dpkg-deb -c</code>/<code>-I</code> and <code>rpm -qlp</code>/<code>-qRp</code> output
+in a Linux build, not just a CMake reading - the pre-split <code>.deb</code> was, on inspection, a single
+package silently bundling <code>ac3cli</code> together with the <em>entire</em> SDK (headers, static archives, and
+the CMake package config all thrown in beside the binary), which this split also fixes as a
+side effect.</p>
+<p>The Shield <code>.apk</code> is signed with a real release keystore when one is provisioned (see
+"Provisioning the Android release keystore" below), and falls back to AGP's default debug
+keystore cleanly if it isn't - either way it's fine for sideloading onto a Shield in developer
+mode. A release keystore is a prerequisite before this could ever go through the Play Store,
+which sideloading itself doesn't require. (Not to be confused with <strong>object signing</strong> - the EMDF
+Atmos authenticity tag, provisioned separately via the <code>ATMOS_SIGNING_KEY</code> secret and
+unrelated to APK code-signing; see "Provisioning the Android object-signing key" below.)</p>
+<p>No leg is <code>experimental: true</code> any more (see <code>ci.yml</code>'s status table), so all five package
+for real rather than best-effort - a packaging failure on any of them blocks the release the
+same as a build or test failure would. Every package - end-user or library - gets a <code>.sha512</code>
+(<code>CPACK_PACKAGE_CHECKSUM</code> in <code>cmake/Packaging.cmake</code>), an aggregate <code>SHA512SUMS</code> manifest,
+keyless Sigstore/OIDC build provenance, and an SPDX SBOM covering the whole release artifact
+set - see Verifying a download below. GPG signatures are additional and only appear once a
+signing key is provisioned (next section); their absence doesn't block a release.</p>
+<h2 id="provisioning-the-gpg-signing-key-optional-one-time">Provisioning the GPG signing key (optional, one-time)<a class="headerlink" href="#provisioning-the-gpg-signing-key-optional-one-time" title="Permanent link">&para;</a></h2>
+<p>GPG signing is off by default - the release workflow checks whether <code>REPO_GPG_PRIVATE_KEY</code> is
+set and skips the signing steps cleanly if it isn't. <strong>Nobody should ever paste a private key
+into chat with an agent, or ask one to generate/handle key material</strong> - do this yourself,
+locally:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># 1. Generate a signing-only key (no passphrase keeps CI simplest - see the</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1">#    tradeoff note below before deciding that&#39;s right for you).</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>gpg<span class="w"> </span>--batch<span class="w"> </span>--quick-generate-key<span class="w"> </span><span class="s2">&quot;ac3forge &lt;you@example.com&gt;&quot;</span><span class="w"> </span>rsa4096<span class="w"> </span>sign<span class="w"> </span>never
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># 2. Export the private key.</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>gpg<span class="w"> </span>--armor<span class="w"> </span>--export-secret-keys<span class="w"> </span><span class="s2">&quot;ac3forge&quot;</span><span class="w"> </span>&gt;<span class="w"> </span>ac3forge-signing-key-private.asc
+</code></pre></div>
+<ol>
+<li>In the GitHub repo, go to Settings &gt; Secrets and variables &gt; Actions, and add:</li>
+<li><code>REPO_GPG_PRIVATE_KEY</code> - the full contents of <code>ac3forge-signing-key-private.asc</code>.</li>
+<li><code>REPO_GPG_PASSPHRASE</code> - only if you gave the key a passphrase in step 1.</li>
+<li>Delete the local <code>ac3forge-signing-key-private.asc</code> file.</li>
+</ol>
+<p><strong>The no-passphrase tradeoff</strong>: a passphrase-less key is simpler to automate (no
+<code>REPO_GPG_PASSPHRASE</code> secret, no interactive unlock to script around) but weaker if GitHub's
+secret store is ever compromised - decide deliberately rather than defaulting to it. There is no
+key-rotation procedure documented here; if you want one, design it before you need it, not
+during an incident.</p>
+<h2 id="provisioning-the-android-release-keystore-optional-one-time">Provisioning the Android release keystore (optional, one-time)<a class="headerlink" href="#provisioning-the-android-release-keystore-optional-one-time" title="Permanent link">&para;</a></h2>
+<p>Off by default the same way GPG signing is - <code>_build.yml</code>'s <code>build-android</code> job checks whether
+<code>ANDROID_KEYSTORE_BASE64</code> and its three companion secrets are set, and falls back to the debug
+keystore cleanly if they aren't (see <code>build.gradle.kts</code>'s <code>releaseSigningAvailable</code>). <strong>Nobody
+should ever paste a private key into chat with an agent, or ask one to generate/handle key
+material</strong> - do this yourself, locally:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># 1. Generate a release keystore. Requires a JDK (keytool ships with any</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1">#    JDK - `java -version` to check; CI uses Temurin 17, matching that isn&#39;t</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1">#    required but keeps things consistent). Leave -storepass/-keypass off so</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1">#    it prompts interactively - keeps the passwords out of shell history and</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1">#    the process list. The -dname prompts (name/org/etc) only populate the</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1">#    certificate&#39;s subject line, not security-relevant - answer them however</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1">#    you like. PKCS12 (the modern default) uses one password for both the</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="c1">#    keystore and the key - there is no separate key password to set.</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>keytool<span class="w"> </span>-genkeypair<span class="w"> </span>-v<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">  </span>-keystore<span class="w"> </span>ac3forge-shield-release.keystore<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="w">  </span>-storetype<span class="w"> </span>PKCS12<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">  </span>-alias<span class="w"> </span>ac3forge-shield<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="w">  </span>-keyalg<span class="w"> </span>RSA<span class="w"> </span>-keysize<span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="w">  </span>-validity<span class="w"> </span><span class="m">10000</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a><span class="c1"># 2. Back up the keystore file itself right now, before doing anything else -</span>
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="c1">#    e.g. into a password manager&#39;s secure file storage, or an encrypted</span>
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a><span class="c1">#    offline drive. Unlike a GPG key, there is no separate keyring backing</span>
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a><span class="c1">#    this file up - it IS the private key, with no other copy anywhere.</span>
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a><span class="c1">#    Losing it means never being able to sign an update to this app under</span>
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a><span class="c1">#    the same identity again.</span>
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a><span class="c1"># 3. Base64-encode it into one line, ready to paste into a GitHub secret</span>
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a><span class="c1">#    (GitHub Actions secrets are text; this is the standard way to carry a</span>
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a><span class="c1">#    binary keystore through one).</span>
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>base64<span class="w"> </span>-w0<span class="w"> </span>ac3forge-shield-release.keystore<span class="w"> </span>&gt;<span class="w"> </span>ac3forge-shield-release.keystore.b64
+</code></pre></div>
+<ol>
+<li>In the GitHub repo, go to Settings &gt; Secrets and variables &gt; Actions, and add:</li>
+<li><code>ANDROID_KEYSTORE_BASE64</code> - the full contents of <code>ac3forge-shield-release.keystore.b64</code>.</li>
+<li><code>ANDROID_KEYSTORE_PASSWORD</code> - the password from step 1.</li>
+<li><code>ANDROID_KEY_ALIAS</code> - <code>ac3forge-shield</code> (or whatever <code>-alias</code> you used).</li>
+<li><code>ANDROID_KEY_PASSWORD</code> - the same password as <code>ANDROID_KEYSTORE_PASSWORD</code> (PKCS12 doesn't
+     support a different one - see step 1).</li>
+<li>Delete the local <code>ac3forge-shield-release.keystore.b64</code> file. <strong>Keep the <code>.keystore</code> file
+   itself</strong> - see step 2.</li>
+</ol>
+<p>No key-rotation procedure is documented here for the same reason as the GPG key above - design
+one before an incident forces the question, not during it.</p>
+<h2 id="provisioning-the-android-object-signing-key-optional-one-time">Provisioning the Android object-signing key (optional, one-time)<a class="headerlink" href="#provisioning-the-android-object-signing-key-optional-one-time" title="Permanent link">&para;</a></h2>
+<p>Separate from the APK keystore above: this is the EMDF Atmos authenticity key that lets a
+validating decoder reconstruct the objects (see <a href="../concepts/object-signing/">Object signing</a>). Off
+by default - <code>build-android</code> checks whether <code>ATMOS_SIGNING_KEY</code> is set and, if not, writes
+no key asset, so the app ships the safe unsigned bed51 stream. <strong>The key is yours to provision; do
+not paste key material into a chat with an agent - do this yourself, locally.</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Base64-encode your 32-byte key file into one line, ready to paste into a</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1"># GitHub secret. CI writes this base64 verbatim into the app&#39;s bundled</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># signing.key asset; the app base64-decodes it at startup (the same</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># decode_signing_key() the desktop CLI uses, which also accepts a raw key).</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>base64<span class="w"> </span>-w0<span class="w"> </span>atmos.key<span class="w"> </span>&gt;<span class="w"> </span>atmos.key.b64
+</code></pre></div>
+<p>Then, in the GitHub repo, go to Settings &gt; Secrets and variables &gt; Actions and add
+<code>ATMOS_SIGNING_KEY</code> - the full contents of <code>atmos.key.b64</code> - and delete the local
+<code>atmos.key.b64</code> afterward.</p>
+<div class="admonition danger">
+<p class="admonition-title">A signed APK carries the key</p>
+<p>Because the app signs on-device, <strong>any</strong> Shield build with this secret set — the debug APK CI
+produces on every push included, not just releases — bundles the key as an asset. Treat every
+such APK as key material: it must never be distributed. A build without the secret is the safe
+unsigned app.</p>
+</div>
+<h2 id="verifying-a-download">Verifying a download<a class="headerlink" href="#verifying-a-download" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Provenance (keyless, ties the bytes to this exact repo/workflow/commit)</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>ac3forge-0.2.0-win64.zip<span class="w"> </span>--repo<span class="w"> </span>iainchesworthlabs/ac3forge
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># GPG (ties the bytes to the maintainer&#39;s key, once one is provisioned)</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>gpg<span class="w"> </span>--import<span class="w"> </span>ac3forge-signing-key.asc
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>gpg<span class="w"> </span>--verify<span class="w"> </span>SHA512SUMS.asc<span class="w"> </span>SHA512SUMS<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>sha512sum<span class="w"> </span>-c<span class="w"> </span>SHA512SUMS
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>gpg<span class="w"> </span>--verify<span class="w"> </span>ac3forge-0.2.0-win64.zip.asc<span class="w"> </span>ac3forge-0.2.0-win64.zip
+</code></pre></div>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<p><strong>"... is not on main - releases must be cut from main"</strong> - the commit you tagged (or the ref
+you dispatched from) hasn't been merged to <code>main</code> yet.</p>
+<p><strong>"tag vX.Y.Z already exists"</strong> (manual dispatch only) - either retry with a different version,
+or delete the existing tag first if it was created in error:
+<code>git push origin :refs/tags/vX.Y.Z &amp;&amp; git tag -d vX.Y.Z</code>.</p>
+<p><strong>No package for a platform in the release</strong> - that leg's <code>build-packages</code> job failed for real.
+No leg is <code>experimental: true</code> any more (see <a href="#what-gets-published">What gets published</a> above),
+so a missing package is a genuine failure to investigate, not an expected gap for a
+not-yet-promoted leg - check the run's <code>build-packages</code> job.</p>
+<h2 id="whats-deliberately-not-here">What's deliberately not here<a class="headerlink" href="#whats-deliberately-not-here" title="Permanent link">&para;</a></h2>
+<p>A tag-triggered release publishes signed, attested, SBOM'd packages and a GitHub Release. It does
+<strong>not</strong> publish an APT/DNF package repository, a Docker image, or anything Home Assistant-shaped -
+the earlier project this process was modelled on has release and repository-publishing workflows
+to copy from if any of those are ever wanted here.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

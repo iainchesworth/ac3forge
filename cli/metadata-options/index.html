@@ -1,0 +1,3229 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23">
+      
+      
+      
+        <link rel="canonical" href="https://iainchesworthlabs.github.io/ac3forge/cli/metadata-options/">
+      
+      
+        <link rel="prev" href="../commands/">
+      
+      
+        <link rel="next" href="../../gui/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Options & grammars - ac3forge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#options-grammars" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="ac3forge" class="md-header__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ac3forge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Options & grammars
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../concepts/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../verification/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Validation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../library/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  CLI reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../gui/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  GUI guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="ac3forge" class="md-nav__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ac3forge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/raspberry-pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Raspberry Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../platforms/wasm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebAssembly (browser demo)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/ac3-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AC-3 & E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/atmos-joc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Atmos & JOC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/object-signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../library/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Library
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/encoding-ac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/encoding-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/decoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/spatial-and-atmos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spatial & Atmos objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/station-broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A worked scene — station broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/channel-plans-and-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel plans & routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/muxing-and-sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Muxing & sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/file-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/adm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM / BW64 reading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/adm-bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM → Atmos bridging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/header-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Header map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/c-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../library/python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-tools-token-eac3-encode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tools: token (eac3-encode)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-vbr-token-eac3-encode-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The vbr token (eac3-encode only)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-layout-grammar" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The layout grammar
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-options-encodeeac3-encode-src-map-and-offset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source options (encode/eac3-encode): src=, map= and offset=
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recordlive-options-record-live-containermkv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record/live options (record, live): container=mkv
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#live-options-live-capture2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live options (live): capture2=
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qc-options-qc-preset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qc options (qc): preset=
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-encoder-accepts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the encoder accepts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-specific-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command-specific notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../gui/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GUI guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/loading-a-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Loading a source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/format-and-channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Format & channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/objects-and-motion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objects & motion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/live-session/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/source-assignment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-source & assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/coding-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/qc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QC a stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gui/inspect-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../wasm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live decode demo (WASM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quality-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tool-comparison-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool comparison trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../landscape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci-self-hosted-runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Self-hosted CI runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-tools-token-eac3-encode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tools: token (eac3-encode)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-vbr-token-eac3-encode-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The vbr token (eac3-encode only)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-layout-grammar" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The layout grammar
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-options-encodeeac3-encode-src-map-and-offset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source options (encode/eac3-encode): src=, map= and offset=
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recordlive-options-record-live-containermkv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record/live options (record, live): container=mkv
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#live-options-live-capture2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live options (live): capture2=
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qc-options-qc-preset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qc options (qc): preset=
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Defaults
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-encoder-accepts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the encoder accepts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-specific-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command-specific notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="options-grammars">Options &amp; grammars<a class="headerlink" href="#options-grammars" title="Permanent link">&para;</a></h1>
+<p>Encoding commands in <a href="../commands/">Commands</a> take these after their positional arguments, in any
+order. Not every command honors every option, though the parser accepts them anywhere: <code>silence</code>
+takes none at all; <code>record</code> and <code>live</code> honor only <code>fast-mdct=off</code>, <code>container=</code> and (<code>live</code>
+only) <code>capture2=</code>, and accept but ignore the metadata options (<code>drc=</code>, <code>dialnorm=</code>, <code>heavy</code>,
+<code>cmixlev=</code>, …); <code>atmos</code>, <code>atmos-path</code> and <code>atmos-encode</code> all apply <code>dialnorm=&lt;n&gt;</code>, <code>fast-mdct=off</code>
+and the object-signing flags below, and <code>dialnorm=auto</code> is silently inert on <code>atmos</code>/<code>atmos-path</code>
+— of the three Atmos commands, only <code>atmos-encode</code> measures:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>metadata options (any order, after the positional arguments):
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  drc=&lt;profile&gt;     §7.7.1 dynamic range control per block
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>                    film-standard | film-light | music-standard | music-light | speech
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  heavy             §7.7.2 heavy compression: a peak ceiling in the
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>                    mono downmix, at syncframe resolution
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  ceiling=&lt;dBFS&gt;    that ceiling (default -0.5)
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  dialogue=&lt;dBFS&gt;   where heavy compression puts dialogue (default -20)
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  drc2=&lt;profile&gt;    Ch2&#39;s own DRC profile, layout 1+1 only (§7.7.1) - not
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>                    inherited from drc=, set both to compress both programmes alike
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  heavy2            Ch2&#39;s own heavy compression, layout 1+1 only (§7.7.2.2)
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  ceiling2=&lt;dBFS&gt;   that ceiling for Ch2 (default -0.5)
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  dialogue2=&lt;dBFS&gt;  where Ch2&#39;s heavy compression puts dialogue (default -20)
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>  dialnorm=auto     measure BS.1770 loudness and derive dialnorm (§5.4.2.8)
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  dialnorm=&lt;1..31&gt;  set it directly (default 31)
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  dialnorm2=auto | &lt;1..31&gt;   Ch2&#39;s own dialnorm, layout 1+1 only (§5.4.2.16, default 31)
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>  cmixlev=-3|-4.5|-6      centre downmix level (Table 5.9)
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>  surmixlev=-3|-6|off     surround downmix level (Table 5.10)
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>  mixmeta           E-AC-3 only: emit the mixmdate group (Table E1.2)
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>  lfemix=&lt;0..31&gt;|off      E-AC-3 LFE mix level, 10-code dB (§E2.3.1.11)
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>  dmixmod=ltrt|loro|none  preferred stereo downmix (Table D2.2)
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>  couple            enable channel coupling - honored by &#39;encode&#39; and &#39;sine&#39; (&#39;sine&#39; can also
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>                    spell it as a &#39;c&#39; layout suffix); E-AC-3 coupling is the tools argument&#39;s
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>                    cpl token instead
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>  keep-partial      encode/eac3-encode/atmos-encode: if the run fails partway, keep whatever
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>                    frames were already encoded (named beside the intended output as
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>                    &lt;name&gt;.partial.&lt;ext&gt;) instead of discarding them - off by default, matching
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>                    the GUI&#39;s own keep-partial-output preference
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>  fast-mdct=off     force the direct §8.2.3.2 forward MDCT instead of the default §7.9.4 fast
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>                    path (identical streams to within ~3e-12 max relative coefficient error;
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>                    the direct form is the validation oracle) - applies wherever this command
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>                    encodes, incl. atmos/record/live/eac3-sine/eac3-encode; eac3-encode&#39;s
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>                    [tools] positional can also reach this field via a bare nofastmdct token,
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>                    which wins if both are given; bare fast-mdct (the old opt-in) is a no-op
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>  fast-imdct=off    decode: force the direct §7.9.4 step-3 inverse instead of the default
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>                    radix-2 FFT evaluation - the decode-side mirror of fast-mdct=off above,
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>                    with the same relationship to its oracle (both codecs; bare fast-imdct,
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>                    the old opt-in, is a no-op)
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>  mode=reference    both switches above in one word: every transform this command runs falls
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>                    back to the spec&#39;s own direct evaluation. mode=performance (the default
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>                    state) names the fast paths. Tokens apply in order, so a later
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>                    fast-mdct=off / fast-imdct=off still adjusts one half on its own
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>qc options (qc; any order, after the positional arguments):
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>  preset=&lt;name&gt;     gate the measurement against a named delivery spec
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>                    ebu-r128-s2 | atsc-a85 | netflix
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>  preset=all        gate against every preset above
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>                    omitted: measure and report only, no gate
+</code></pre></div>
+<p>For <code>decode</code>, <code>drc=&lt;scale&gt;</code> instead applies §7.7.1 partial compression (<code>0</code> = ignore, <code>1</code> = as
+encoded), and bare <code>heavy</code> prefers <code>compr</code> where the stream carries it — the decode-time meaning
+of these two tokens is deliberately the mirror of their encode-time meaning. That applies to
+AC-3 decode only: those two tokens are silently inert on <code>.ec3</code> input. <code>fast-imdct=off</code> and
+<code>mode=</code> are the exception — they select the inverse transform's evaluation and apply to both
+codecs' decode alike.</p>
+<p>See <a href="../../library/metadata/">Metadata</a> for what each of these fields actually is at the library
+level (<code>dynrng</code>, <code>compr</code>, <code>dialnorm</code>, downmix levels) — the CLI tokens above map directly onto
+that page's config fields.</p>
+<h2 id="the-tools-token-eac3-encode">The <code>tools:</code> token (<code>eac3-encode</code>)<a class="headerlink" href="#the-tools-token-eac3-encode" title="Permanent link">&para;</a></h2>
+<p>Annex E coding tools, <code>+</code>-joined:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>tools:  Annex E coding tools, &#39;+&#39;-joined — none | cpl | spx | aht | tpn |
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>        nofastmdct | all
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>        (cpl:N / spx:N pin a band edge, aht:N the gain mode, ecpl selects
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>        enhanced coupling instead of standard, tpn selects transient
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        pre-noise processing)
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        cpl:N / spx:N pin that tool&#39;s band edge (e.g. cpl:4+spx:5);
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>        aht:N pins the GAQ mode — aht:0 is AHT with GAQ switched off;
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>        atten:N pins the SPX notch depth, noatten removes it;
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>        ecpl only takes effect alongside cpl (e.g. cpl+ecpl);
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>        nofastmdct forces the direct-form forward MDCT instead of the
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>        default §7.9.4 fast path — the fast MDCT is not a coding tool
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>        (nothing in the bitstream&#39;s syntax changes), so &#39;none&#39; and &#39;all&#39;
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>        both leave it alone, and the older opt-in spelling &#39;fastmdct&#39;
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>        still parses as a no-op
+</code></pre></div>
+<p>The tool set is the fourth positional argument, not an <code>=</code> option. Example:
+<code>ac3cli eac3-encode in.wav out.ec3 192 cpl+spx:5+aht:0</code> turns on coupling (auto band edge),
+spectral extension pinned to band 5, and AHT with GAQ off; <code>cpl+ecpl+tpn</code> in the same slot turns
+on enhanced coupling (auto band edge) and transient pre-noise processing together — <code>ecpl</code> and
+<code>tpn</code> are independent tools, not alternatives to each other or to <code>spx</code>/<code>aht</code>, so any
+combination the tools argument accepts is legal here. <code>all</code> does not currently imply <code>ecpl</code> or
+<code>tpn</code>; name them explicitly to get either.</p>
+<h2 id="the-vbr-token-eac3-encode-only">The <code>vbr</code> token (<code>eac3-encode</code> only)<a class="headerlink" href="#the-vbr-token-eac3-encode-only" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vbr (eac3-encode only): off | q:0..1[,min:kbps][,max:kbps] - E-AC-3 only
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>        quality is encoder-relative, not a fixed target — bit cost rises
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>        steeply above roughly half the range, so a high quality with no
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>        max bound will often refuse real programme material outright;
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        bitrate_kbps still matters in vbr mode — it feeds the same
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        coupling/spx frequency defaults it always has, not a target rate
+</code></pre></div>
+<p>Example: <code>ac3cli eac3-encode in.wav out.ec3 192 none stereo q:0.4,max:320</code> encodes at quality 0.4,
+capped at 320 kbps whenever the content would otherwise ask for more; <code>bitrate_kbps</code> (192 here)
+still drives the coupling/spx band-edge defaults the way it always has, since VBR has no fixed
+target rate to hand them.</p>
+<p>Omit <code>vbr</code> (or pass <code>off</code>) for ordinary CBR — the default. AC-3 (<code>encode</code>) is CBR-only because
+<code>frmsizecod</code> indexes a fixed frame-size table; <code>eac3-silence</code> and <code>eac3-sine</code> are E-AC-3
+(<code>frmsiz</code>) and are CBR-only simply because their argument lists have no <code>vbr</code> slot.</p>
+<h2 id="the-layout-grammar">The <code>layout</code> grammar<a class="headerlink" href="#the-layout-grammar" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>layout: mono | stereo | 1+1 | 51 | 71 | 512 | 514 | 714
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>        AC-3 carries only mono | stereo | 1+1 | 51 — everything wider needs the dependent
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>        substreams that only E-AC-3 has.
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>        71 renders 8 speakers from 10 coded channels
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        714 renders 12 speakers from 14 coded channels
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        For &#39;sine&#39; and &#39;eac3-sine&#39; each speaker gets its own tone; append
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>        &#39;c&#39; to a &#39;sine&#39; layout (stereoc, 51c) to enable channel coupling.
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>        For &#39;encode&#39; and &#39;eac3-encode&#39; it names the OUTPUT layout: a
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>        source narrower than it leaves the channels it lacks silent, and
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>        a wider one folds down per §7.8 using cmixlev/surmixlev.
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>        [layout] also takes a comma-separated Table E2.5 location list
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>        instead of one of the names above, for anything Annex E allows
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>        that has no preset: e.g. L,C,R,LFE,Vhl,Vhr or L,C,R,LFE,LFE2,Vhc.
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>        AC-3 accepts one too, as long as it needs no dependent substream
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>        (e.g. L,R,Cs or L,C,R,Cs - Table 5.8 modes no preset names).
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>        Locations: L C R Ls Rs Lc Rc Lrs Rrs Cs Ts Lsd Rsd Lw Rw Vhl Vhr
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>        Vhc Lts Rts LFE2 LFE - a paired location (Lc/Rc, Lrs/Rrs, Lsd/Rsd,
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>        Lw/Rw, Vhl/Vhr, Lts/Rts) must be given both halves.
+</code></pre></div>
+<p><code>71</code> and <code>714</code> render fewer speakers than they code because, per §E3.8.2, a dependent
+substream's channels replace some of the bed's rather than adding to it — see
+<a href="../../library/encoding-eac3/">Wide layouts</a> for the encoder-side mechanics behind that.</p>
+<p><code>1+1</code> is not a speaker layout at all — two independent, single-channel programmes sharing one
+syncframe (§5.4.2's "1+1 dual mono") — so it's never inferred from a source's channel count the
+way <code>mono</code>/<code>stereo</code>/<code>51</code>/etc. are; it has to be named explicitly. <code>encode</code>/<code>eac3-encode</code> take its
+two channels either as one two-channel WAV (channel 0 = Ch1, channel 1 = Ch2) or as two mono WAV
+files (<code>in.wav</code> = Ch1, the trailing <code>in2.wav</code> positional = Ch2) — see <a href="../commands/">Commands</a> for
+both forms. <code>dialnorm2=</code>/<code>drc2=</code>/<code>heavy2</code> above set Ch2's own dialnorm/DRC/heavy compression;
+none of the three is inherited from Ch1's — a stream that wants both programmes treated alike sets
+both explicitly. <code>decode</code> writes Ch1/Ch2 back out in that same order, and <code>levels</code> names them
+<code>Ch1</code>/<code>Ch2</code> rather than a speaker position that would not apply.</p>
+<h2 id="source-options-encodeeac3-encode-src-map-and-offset">Source options (<code>encode</code>/<code>eac3-encode</code>): <code>src=</code>, <code>map=</code> and <code>offset=</code><a class="headerlink" href="#source-options-encodeeac3-encode-src-map-and-offset" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>source options (encode/eac3-encode; any order, after the positional arguments):
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  src=&lt;path&gt;        an additional input source; repeat for more than one
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  map=&lt;spec&gt;        &lt;source&gt;.&lt;channel&gt;[-&lt;channel2&gt;]:&lt;dest&gt;[@&lt;trim&gt;][,...] - dest is a channel
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>                     name, obj, objm, p1, p2 or none; a channel range is only legal with obj,
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>                     objm or none, and folds to one mono object with objm; trim is an optional
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>                     signed dB gain in [-24,24] on dest, e.g. L@-3.5
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>                     once given, every loaded channel must appear - explicit &#39;none&#39; silences
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>                     the goes-nowhere warning without giving it anywhere to go
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>  offset=&lt;sourceIndex&gt;:&lt;seconds&gt;   leading silence ahead of that source&#39;s own channels
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>                     (seconds &gt;= 0), same 0-based numbering as src=
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>                     the programme is still as long as the longest one once every offset is
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>                     applied
+</code></pre></div>
+<p><code>src=</code> loads another WAV alongside <code>in.wav</code> (source index 0), in the order given — <code>src=a.wav
+src=b.wav</code> makes <code>a.wav</code> source 1 and <code>b.wav</code> source 2. Every source must share <code>in.wav</code>'s sample
+rate.</p>
+<p>With exactly one source (no <code>src=</code> at all), <code>map=</code> is not needed: the existing automatic
+single-source panning applies, byte-identical to a plain <code>ac3cli encode</code>/<code>eac3-encode</code> invocation
+that predates this option — omitting <code>map=</code> is defined to behave exactly as if <code>src=</code>/<code>map=</code> did
+not exist. With more than one source, <code>map=</code> becomes mandatory: automatic panning has no defined
+meaning across several files, so every loaded channel needs an explicit entry (or an explicit
+<code>none</code>) before the encode will run.</p>
+<p>Each <code>map=</code> entry is <code>&lt;source&gt;.&lt;channel&gt;:&lt;dest&gt;</code>, comma-separated, <code>&lt;channel&gt;</code> 0-indexed. A
+channel <em>range</em> (<code>&lt;channel&gt;-&lt;channel2&gt;</code>) is only legal when <code>&lt;dest&gt;</code> is <code>obj</code>, <code>objm</code> or <code>none</code> —
+a location or a programme names exactly one channel, so a range there would be ambiguous about
+which one it means. <code>objm</code> folds the whole range into ONE mono object (equal-weight sum, scaled by
+<code>1/n</code> so several full-range channels summed together don't clip past what one alone would) rather
+than one object per channel the way a plain <code>obj</code> range does. Two entries naming the same location,
+or more than one entry per dual-mono programme, is refused.</p>
+<p>The <code>obj</code>/<code>objm</code> destinations parse but currently do nothing in <code>ac3cli</code>: the routing behind
+<code>encode</code>/<code>eac3-encode</code> skips every non-location row (also true of a stray <code>p1</code>/<code>p2</code> row on a
+target that isn't dual mono), the CLI has no object assembly behind <code>map=</code>, and <code>atmos-encode</code>
+ignores <code>src=</code>/<code>map=</code> entirely — audio mapped onto an object destination is still discarded, but
+no longer silently: <code>encode</code>/<code>eac3-encode</code> print a warning naming the source/channel and
+destination for each row that resolves to nothing. Object destinations need the object-capable
+front end, the GUI (see <a href="../../gui/source-assignment/">GUI → Multi-source &amp; assignment</a>).</p>
+<p>Any <code>&lt;dest&gt;</code> may carry an optional trailing <code>@&lt;trim&gt;</code> — a signed decibel gain in <code>[-24, 24]</code>,
+snapped to a tenth of a dB (<code>L@-3.5</code>, <code>obj@2</code>) — applied as linear gain wherever that channel's
+content reaches the stream: folded into the routing matrix for a bed position or a dual-mono
+programme, or, for <code>obj</code>/<code>objm</code>, into the object's plane at assembly — which only the GUI
+performs, per the note above. Omitted (no <code>@</code>) means no trim, the same as an explicit <code>@0</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>ac3cli<span class="w"> </span>eac3-encode<span class="w"> </span>roundtrip-stereo.wav<span class="w"> </span>out.ec3<span class="w"> </span><span class="m">384</span><span class="w"> </span>none<span class="w"> </span><span class="m">51</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="nv">src</span><span class="o">=</span>roundtrip-51.wav<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nv">map</span><span class="o">=</span><span class="m">0</span>.0:C,0.1:none,1.0:L,1.1:R@-3,1.2:none,1.3:LFE,1.4:Ls,1.5:Rs<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nv">offset</span><span class="o">=</span><span class="m">1</span>:2.5
+</code></pre></div>
+<p><code>roundtrip-stereo.wav</code>'s left channel (source 0, channel 0) carries the centre; its right channel
+is explicitly silenced. <code>roundtrip-51.wav</code> (source 1) fills the rest, its right channel (<code>1.1</code>)
+trimmed 3 dB down, with its own centre channel (<code>1.2</code>) also sent nowhere so it doesn't collide
+with the first source's. <code>[vbr]</code> and <code>[in2.wav]</code> are both skippable here even though they come
+earlier in <code>eac3-encode</code>'s own positional order — the parser lifts option tokens (anything
+containing <code>=</code>, plus the known bare flags) out of the argument list wherever they appear, so the
+remaining positionals keep their places whether options are present or not.</p>
+<p><code>offset=1:2.5</code> delays <code>roundtrip-51.wav</code> (source 1) by 2.5 seconds of leading silence ahead of its
+own channels — every channel that source contributes shifts together, as when it starts, not what
+it contains. <code>offset=</code> applies as silence, not truncation: the programme's overall length grows to
+cover whichever source ends latest once every offset is applied, not just the longest source's own
+raw length, so a delayed source is never cut short to fit. <code>&lt;sourceIndex&gt;</code> uses the same numbering
+<code>src=</code> establishes (<code>0</code> is the primary positional file, <code>1..N</code> are <code>src=</code> in the order given), and
+works with a single source too — <code>ac3cli encode in.wav out.ac3 384 51 offset=0:2.5</code> needs no
+<code>src=</code>/<code>map=</code> at all. Omitting <code>offset=</code> for a source (or giving it <code>0</code> seconds) behaves exactly as
+it always has.</p>
+<p><code>dialnorm=auto</code>/<code>dialnorm2=auto</code> work alongside <code>src=</code>/<code>map=</code>: the whole programme is routed once
+as a measurement pre-pass — the same BS.1770-4 gated pass the single-file path runs, over what
+<code>map=</code> actually assembles (post-routing, post-trim), not each source's own raw channels — before
+the real encode loop routes it again to encode it. A <code>1+1</code> target measures Ch1/Ch2 independently,
+same as the single-file case; every other target gets one whole-programme measurement over the
+routed bed. A trim on <code>map=</code> (e.g. <code>L@-6</code>) is measured on the trimmed signal, since that is what
+actually reaches the stream.</p>
+<p>In the GUI, a full-bandwidth channel explicitly assigned onto <code>LFE</code>/<code>LFE2</code> is sent through a
+120 Hz low-pass rather than passed through untouched — an explicit assignment states raw content
+for that position, and a real subwoofer (and the LFE channel's own +10 dB mixing headroom)
+assumes it only ever carries deep bass. <code>ac3cli</code> does not filter: its <code>map=</code> routing is a pure
+gain matrix, so content mapped onto <code>LFE</code>/<code>LFE2</code> (e.g. <code>1.3:LFE</code> above) passes through
+unfiltered. Neither front end touches a source's own dedicated LFE channel reaching <code>LFE</code>
+through automatic single-source routing (no <code>src=</code>/<code>map=</code> at all) — that stays bit-exact, since
+nothing there claims full-bandwidth content belongs on that position.</p>
+<p>The GUI's own multi-source Format-tab table (<strong>Add source…</strong> plus a per-channel assignment field)
+is a direct front end over this same grammar — see
+<a href="../../gui/source-assignment/">GUI → Multi-source &amp; assignment</a>.</p>
+<h2 id="recordlive-options-record-live-containermkv">Record/live options (<code>record</code>, <code>live</code>): <code>container=mkv</code><a class="headerlink" href="#recordlive-options-record-live-containermkv" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>record/live options (record, live; any order, after the positional arguments):
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  container=mkv     write straight to Matroska instead of the bare elementary
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>                     stream this writes by default - same shape of choice as
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>                     the GUI&#39;s own Container setting (container=matroska is
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>                     an accepted alias)
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>  container=raw     the default, spelled out
+</code></pre></div>
+<p><code>container=mkv</code> (alias <code>container=matroska</code>) writes the take straight to Matroska (<code>.mkv</code>)
+instead of a bare <code>.ac3</code>/<code>.ec3</code> elementary stream, in the one <code>record</code>/<code>live</code> command — unlike
+<code>mkv</code>, which wraps an
+<em>already-encoded</em> file after the fact (see <a href="#command-specific-notes">Command-specific notes</a>
+below), there is no second command needed here. <code>container=raw</code> is the default spelled out
+explicitly; any other value is refused rather than silently ignored, the same rule every option on
+this page follows. This is the same choice the GUI's own Container combo offers on the Format tab
+(see <a href="../../gui/format-and-channels/">GUI → Format &amp; channels</a>) — see <a href="../../gui/live-session/#take-durability">GUI → Live capture &amp;
+session</a> for how a live session's own take durability
+differs slightly between the two front ends.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>ac3cli<span class="w"> </span>record<span class="w"> </span>out.mkv<span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="m">192</span><span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="nv">container</span><span class="o">=</span>mkv
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>ac3cli<span class="w"> </span>live<span class="w"> </span>out.mkv<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="m">448</span><span class="w"> </span>-2<span class="w"> </span>-2<span class="w"> </span>atmos<span class="w"> </span><span class="nv">container</span><span class="o">=</span>mkv
+</code></pre></div>
+<h2 id="live-options-live-capture2">Live options (<code>live</code>): <code>capture2=</code><a class="headerlink" href="#live-options-live-capture2" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>live options (live; any order, after the positional arguments):
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  capture2=&lt;index&gt;  a second capture device, clock-conformed to the first (see &#39;devices&#39;)
+</code></pre></div>
+<p><code>capture2=&lt;index&gt;</code> names a second capture device — same 0-based numbering <code>devices</code> prints and the
+<code>capture_device</code> positional already uses — that joins the session alongside the master. The master
+(<code>capture_device</code>) still paces the session exactly as it always has: frame timing, target frame
+count and every other positional argument mean what they meant before this option existed.
+<code>capture2</code>'s own sample rate does not need to match the master's, only be a legal AC-3 rate itself
+(32, 44.1 or 48 kHz) — a drift-tracking resampler continuously conforms the slave's stream to the
+master's pacing, correcting both the nominal rate conversion and whatever free-running clock drift
+the two devices accumulate against each other. The slave's channels are appended after the
+master's own, at new, higher channel indices, in the same interleaved per-frame block that feeds
+the encoder — so a two-device <code>atmos</code> session simply gets more objects to place. The measured
+drift is printed once, in signed parts-per-million, when the session ends.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>ac3cli<span class="w"> </span>live<span class="w"> </span>out.ec3<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="m">448</span><span class="w"> </span>-2<span class="w"> </span>-2<span class="w"> </span>atmos<span class="w"> </span><span class="nv">capture2</span><span class="o">=</span><span class="m">1</span>
+</code></pre></div>
+<p>Captures 30 seconds of Atmos-mode E-AC-3 from device 0 (the clock master) plus device 1
+(clock-conformed to device 0), no monitor or passthrough, writing <code>out.ec3</code>.</p>
+<h2 id="qc-options-qc-preset">Qc options (<code>qc</code>): <code>preset=</code><a class="headerlink" href="#qc-options-qc-preset" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>qc options (qc; any order, after the positional arguments):
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>  preset=&lt;name&gt;     gate the measurement against a named delivery spec
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>                    ebu-r128-s2 | atsc-a85 | netflix
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>  preset=all        gate against every preset above
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>                    omitted: measure and report only, no gate
+</code></pre></div>
+<p><code>preset=&lt;name&gt;</code> checks <code>qc</code>'s BS.1770-4 measurement against one named delivery-loudness gate instead of just
+reporting it; <code>preset=all</code> checks every one below in a single run. Each preset states a target integrated
+loudness, a symmetric tolerance around it (in LU) and a true-peak ceiling (a one-sided limit, never exceeded —
+not a tolerance band). The numbers are defined in <code>ac3::meta::qc_preset()</code>
+(<a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/src/forge/include/ac3/meta/qc.hpp"><code>ac3/meta/qc.hpp</code></a>), each
+read directly from its own primary source rather than recalled from memory:</p>
+<table>
+<thead>
+<tr>
+<th>Preset</th>
+<th>Target</th>
+<th>Tolerance</th>
+<th>Max true peak</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ebu-r128-s2</code></td>
+<td>−23.0 LUFS</td>
+<td>±1.0 LU</td>
+<td>−1.0 dBTP</td>
+<td>EBU R 128 s2 "Loudness in Streaming" (Geneva, November 2023, v3) recommendation (e) — programmes "should be streamed unchanged, that is at −23.0 LUFS" — which itself defers tolerance/true-peak to EBU R 128 (Geneva, November 2023, v5) recommendations (h) and (m)</td>
+</tr>
+<tr>
+<td><code>atsc-a85</code></td>
+<td>−24.0 LKFS</td>
+<td>±2.0 dB</td>
+<td>−2.0 dBTP</td>
+<td>ATSC A/85:2013 (with Corrigendum No. 1, 11 February 2021) §6 "Target Loudness and True Peak Levels for Content Delivery or Exchange"</td>
+</tr>
+<tr>
+<td><code>netflix</code></td>
+<td>−27.0 LKFS</td>
+<td>±2.0 LU</td>
+<td>−2.0 dBTP</td>
+<td>Netflix "Sound Mix Specifications &amp; Best Practices" v1.6, Near-field Audio Prerequisites for Mix Facilities</td>
+</tr>
+</tbody>
+</table>
+<p>Omitting <code>preset=</code> entirely leaves <code>qc</code> in measure-and-report mode — every number is still printed, there is
+just no PASS/FAIL verdict and nothing to gate on. See <a href="../commands/#decoding-inspection">Commands → <code>qc</code></a> for the
+full report format and the exit-code convention this drives.</p>
+<h2 id="defaults">Defaults<a class="headerlink" href="#defaults" title="Permanent link">&para;</a></h2>
+<p>Optional positional arguments, when omitted:</p>
+<ul>
+<li><code>silence</code>, <code>sine</code>, <code>eac3-silence</code>, <code>eac3-sine</code> — 5 s at 192 kbps; the tone commands default to
+  1000 Hz at 50% amplitude, and the three that take <code>[layout]</code> default to <code>stereo</code>.</li>
+<li><code>orbit</code> — 8 s at 448 kbps, 4 s per orbit.</li>
+<li><code>atmos</code> — 8 s at 448 kbps, 4 objects, 6 s per orbit.</li>
+<li><code>record</code> — 5 s at 192 kbps from device 0.</li>
+<li><code>live</code> — 10 s at 192 kbps.</li>
+<li><code>play</code>, <code>monitor</code> — device <code>-1</code>, the default output.</li>
+</ul>
+<h2 id="what-the-encoder-accepts">What the encoder accepts<a class="headerlink" href="#what-the-encoder-accepts" title="Permanent link">&para;</a></h2>
+<ul>
+<li>WAV sample rates: AC-3 takes 32, 44.1 or 48 kHz (Table 5.6); E-AC-3 additionally takes the
+  Annex E <code>fscod2</code> half rates 16, 22.05 and 24 kHz.</li>
+<li>The bit rate must be one of the 19 nominal AC-3 rates (Table 5.18), 32 through 640 kbps.</li>
+<li><code>record</code> captures the first two channels of the endpoint (stereo); a mono device is duplicated
+  across both.</li>
+<li>The Atmos commands take 1 to 15 objects — the bed's LFE is the 16th, and TS 103 420 §8.3.2.2
+  caps the total at 16.</li>
+</ul>
+<h2 id="command-specific-notes">Command-specific notes<a class="headerlink" href="#command-specific-notes" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>mkv</code></strong> reads format, packet boundaries, sample rate and channel count from the bitstream
+  itself, so it cannot be told the wrong ones. E-AC-3 dependent substreams are grouped into their
+  access unit and counted as the channels they render.</li>
+<li><strong><code>spdif</code></strong> wraps an already-encoded AC-3 or E-AC-3 file's IEC 61937 bursts as a 2-channel
+  16-bit PCM WAV, playable bit-exactly (100% volume, no mixing) into an S/PDIF or HDMI output to
+  light up a receiver's Dolby Digital indicator. Detects AC-3 vs. E-AC-3 from the stream itself
+  (<code>bsid</code>); E-AC-3's carrier runs at four times the content sample rate (WASAPI's own
+  <code>make_eac3_format</code> convention), which is legal though unusual for a plain PCM16 file. The GUI's
+  S/PDIF container option is this same command, run automatically as the second half of a
+  two-command encode — see <a href="../../gui/format-and-channels/">GUI → Format &amp; channels</a>.</li>
+<li><strong><code>atmos</code></strong> encodes objects orbiting the room at different heights and rates as a 5.1 E-AC-3 bed
+  plus JOC + OAMD side data (TS 103 420); FFmpeg reports the result as "Dolby Digital Plus + Dolby
+  Atmos". <strong><code>atmos-encode</code></strong> does the same but makes each channel of a real source file an object
+  instead of synthesizing motion. Its optional <code>[paths.txt]</code> (same format <code>atmos-path</code> reads)
+  authors that motion instead of the default static, fanned-out placement — keyed by WAV channel
+  index, so an object index the file doesn't mention keeps its default placement unchanged.</li>
+<li><strong><code>atmos</code> mode</strong>: <code>objects</code> (default) writes the JOC+OAMD container; <code>bed51</code> omits it so the
+  5.1 bed still plays on a decoder that would otherwise refuse an object container it can't
+  validate, instead of falling back to the bed on its own. See
+  <a href="../../concepts/atmos-joc/">Atmos &amp; JOC</a> for why a decoder can tell the difference at all.</li>
+<li><strong><code>sign-objects</code></strong> (with <strong><code>signing-key=&lt;path&gt;</code></strong>): signs the object container's EMDF protection
+  tag so a validating decoder reconstructs the objects instead of playing the bed. Honored by all
+  three Atmos commands (<code>atmos</code>, <code>atmos-path</code>, <code>atmos-encode</code>). Off unless you pass both —
+  <code>sign-objects</code> alone with no key is an error. The key may also come from
+  <code>AC3FORGE_SIGNING_KEY_FILE</code> / <code>AC3FORGE_SIGNING_KEY</code> instead of <code>signing-key=</code>. The key is never
+  stored by the tool; the algorithm is in-tree but the key is yours to provision. Full details in
+  <a href="../../concepts/object-signing/">Object signing</a>.</li>
+<li><strong><code>fast-mdct=off</code></strong>: every encode runs the §7.9.4 fast forward MDCT by default (the quality
+  evidence that made it the default: ~3e-12 max relative coefficient error against the direct
+  form, 331 dB direct-vs-fast end-to-end SNR, 0.000 dB SNR delta against an independent oracle
+  at 192–448 kbps — see <code>tools/ci/quality_race.py fast-mdct</code>). <code>fast-mdct=off</code> forces the direct
+  §8.2.3.2 reference form — the validation oracle — wherever the command encodes, including the
+  <code>atmos*</code>, <code>record</code>, <code>live</code>, <code>eac3-sine</code> and <code>eac3-encode</code> (both its single-source and its
+  <code>src=</code>/<code>map=</code> multi-source path). <code>eac3-encode</code> also has a second spelling: the bare
+  <code>nofastmdct</code> token inside its <code>[tools]</code> positional argument reaches the same field, and wins
+  over <code>fast-mdct=off</code> if both are given on the same command line. Typing <code>tools=nofastmdct</code> as
+  if it were a trailing option does not parse, since any <code>=</code> token goes to the options parser,
+  which has no <code>tools</code> key. The fast MDCT is not a coding tool, so <code>none</code>/<code>all</code> leave it alone.
+  <code>eac3-silence</code> has no use for either spelling: it builds a silent access unit directly, with no
+  forward transform in the loop to choose a path for. The bare <code>fast-mdct</code> word and the
+  <code>fastmdct</code> tool token — the opt-in spellings from when this defaulted off — still parse and now
+  name what already happens.</li>
+<li><strong><code>fast-imdct=off</code></strong>: the decode-side mirror. <code>decode</code> runs §7.9.4 step 3 — the inverse
+  transform's one O(N²) part — through a radix-2 FFT by default (the quality evidence that made
+  it the default: 7.8e-14 max peak-normalized relative error against the direct evaluation at the
+  transform level, and over 180-second real-material decodes 214.9 dB SNR agreement for AC-3 /
+  284.7 dB for E-AC-3, with decodes 4.5–4.7× faster). <code>fast-imdct=off</code> forces the pseudocode's
+  own direct sum — the reference form, and the oracle the fast path's tests validate against.
+  Applies to both codecs; the <code>qc</code>, <code>levels</code> and playback decoders stay on the library default,
+  where a ~1e-12 difference cannot move a reported figure. Encoded output never depends on this
+  switch: the encoder's own internal inverse-transform uses are pinned to the direct form
+  regardless. The bare <code>fast-imdct</code> word — the opt-in spelling from when this defaulted off —
+  still parses and now names what already happens.</li>
+<li><strong><code>mode=performance|reference</code></strong>: the two switches above as one statement of intent.
+  <code>mode=reference</code> turns <strong>both</strong> fast paths off — the forward MDCT wherever the command encodes
+  and the step-3 inverse in <code>decode</code> — so the whole run uses the spec's own direct evaluations:
+  the forms the standard states, the forms every fast-path test validates against, and the forms
+  to reach for when two runs must agree bit-for-bit with the spec's stated arithmetic (comparing
+  against an external reference decoder sample-for-sample, regenerating validation fixtures,
+  chasing a suspected transform defect). <code>mode=performance</code> — the default state, so passing it
+  changes nothing — names the fast paths: same streams to within ~1e-12, encodes measurably
+  faster and decodes 4.5–4.7× faster. Tokens apply in order, so
+  <code>mode=reference fast-mdct=off</code> is redundant but harmless, and <code>mode=performance fast-imdct=off</code>
+  runs a fast encode with a reference decode. <code>eac3-encode</code>'s <code>[tools]</code> positional still wins
+  the forward-MDCT half if both are given, exactly as it does against <code>fast-mdct=off</code>.</li>
+<li><strong><code>keep-partial</code></strong>: <code>encode</code>, <code>eac3-encode</code> and <code>atmos-encode</code> refuse a frame that cannot fit the
+  configuration mid-run just as they always have, but with <code>keep-partial</code> given, whatever frames
+  were already encoded before that point are written to <code>&lt;name&gt;.partial.&lt;ext&gt;</code> (<code>out.ec3</code> →
+  <code>out.partial.ec3</code>) rather than discarded — the run still exits non-zero and prints the same
+  error either way, only what happens to the frames already produced changes. Off by default, the
+  same as every other bare token here; a plain invocation with no <code>keep-partial</code> behaves exactly
+  as it always has. Mirrors the GUI's own keep-partial-output preference (see
+  <a href="../../gui/#preferences">GUI → window layout</a>) rather than a separate idea — the same
+  <code>.partial.</code> naming either way, so a file produced by either front end is named alike.</li>
+</ul>
+<h2 id="next">Next<a class="headerlink" href="#next" title="Permanent link">&para;</a></h2>
+<p><a href="../../concepts/atmos-joc/">Concepts → Atmos &amp; JOC</a> if any of <code>JOC</code>, <code>OAMD</code>, or the object/bed
+relationship above are unfamiliar; <a href="../../library/spatial-and-atmos/">Spatial &amp; Atmos objects</a> for
+the library-level API these commands are thin wrappers over.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

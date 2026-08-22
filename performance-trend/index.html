@@ -1,0 +1,3257 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A clean-room AC-3 / E-AC-3 / Dolby Atmos encoder and decoder in C++23">
+      
+      
+      
+        <link rel="canonical" href="https://iainchesworthlabs.github.io/ac3forge/performance-trend/">
+      
+      
+        <link rel="prev" href="../quality-trend/">
+      
+      
+        <link rel="next" href="../tool-comparison-trend/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Performance trend - ac3forge</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#performance-trend" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ac3forge" class="md-header__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ac3forge
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Performance trend
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../concepts/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Concepts
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../verification/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Validation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../library/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  CLI reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../gui/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  GUI guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ac3forge" class="md-nav__button md-logo" aria-label="ac3forge" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ac3forge
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/iainchesworthlabs/ac3forge" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    iainchesworthlabs/ac3forge
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building from source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Platform notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/raspberry-pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Raspberry Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/android/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Android (NVIDIA Shield)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platforms/wasm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebAssembly (browser demo)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../concepts/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/ac3-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AC-3 & E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/atmos-joc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Atmos & JOC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/object-signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../library/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Library
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Library
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/encoding-ac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/encoding-eac3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoding E-AC-3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/decoding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decoding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/spatial-and-atmos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spatial & Atmos objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/station-broadcast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A worked scene — station broadcast
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/channel-plans-and-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channel plans & routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/muxing-and-sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Muxing & sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/file-io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File I/O
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/adm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM / BW64 reading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/adm-bridge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADM → Atmos bridging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/signing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object signing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/header-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Header map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/c-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../library/python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python bindings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../cli/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/metadata-options/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Options & grammars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../gui/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    GUI guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/loading-a-source/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Loading a source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/format-and-channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Format & channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/objects-and-motion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objects & motion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/live-session/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live capture & session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/source-assignment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-source & assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/coding-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/metadata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metadata
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/qc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QC a stream
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gui/inspect-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    History
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wasm-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live decode demo (WASM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quality-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#whole-frame-trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Whole-frame trend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-kernel-trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-kernel trend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#memory-trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Memory trend
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-comparison-trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool comparison trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../landscape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ci-self-hosted-runners/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Self-hosted CI runners
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#whole-frame-trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Whole-frame trend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-kernel-trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-kernel trend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#memory-trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Memory trend
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="performance-trend">Performance trend<a class="headerlink" href="#performance-trend" title="Permanent link">&para;</a></h1>
+<p>Four separate mechanisms, not one, and it matters which is which:</p>
+<ul>
+<li><strong>The hard gate</strong>: <code>ac3perf</code> (<code>tests/performance/test_performance.cpp</code>) asserts the
+  encoder stays faster than real time (with a 2x safety margin), on every push and
+  every PR. A failure here blocks CI outright - see
+  <a href="https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/workflows/ci.yml">CI Status</a>.
+  Not run under the ASan/UBSan leg: instrumented code has nothing useful to say about
+  throughput at any slack factor, so that leg excludes the <code>Performance</code> label entirely
+  (<code>CMakePresets.json</code>'s <code>test-linux-llvm-asan-ubsan</code> preset).</li>
+<li><strong>This page's whole-frame tables</strong>: <code>ac3bench</code> (<code>tests/performance/bench_encoder.cpp</code>)
+  runs the same encoder configurations for longer (200 frames) and records the actual
+  ms/frame number, not just a pass/fail, on every push to <code>develop</code>/<code>main</code>. It exists
+  to answer a question the hard gate cannot: is throughput quietly drifting slower
+  over time even while it keeps passing.</li>
+<li><strong>This page's per-kernel tables</strong>: <code>ac3kernelbench</code>
+  (<code>tests/performance/kernel_bench.cpp</code>) times each hot kernel in isolation (ns/call,
+  fed real audio through the real windowing + forward MDCT) on the same pushes. It
+  answers the question one level below <code>ac3bench</code>'s: when a whole-frame number
+  drifts, <em>which stage</em> moved - without anyone having to reattach a profiler to find
+  out.</li>
+<li><strong>This page's memory tables</strong>: <code>ac3membench</code>
+  (<code>tests/performance/bench_memory.cpp</code>) counts what the others time: heap
+  allocations and allocator traffic per frame, live-byte drift, and peak RSS,
+  across the same encoder configurations <em>plus</em> the decode paths the timing
+  benches never covered. It records the memory-usage programme's progress the
+  same way the whole-frame series recorded the CPU programme's, and - unlike
+  ms/frame - its numbers are near-deterministic for a fixed workload, so a
+  flagged row is a real behavioural change, not runner noise.</li>
+</ul>
+<p>All of this exists because a severe encoder regression (a per-call recomputation the
+forward MDCT should have cached) once shipped with no coverage to catch it: the hard
+gate blocks a repeat outright, and the trend tables catch the gradual drift a
+pass/fail gate cannot see.</p>
+<p><code>tools/ci/append_performance_history.py</code> appends every <code>develop</code>/<code>main</code> run's numbers
+to the <code>quality-history</code> branch (reused, not a new branch - the same reasoning
+<a href="../quality-trend/">Quality trend</a> already gives for a dedicated branch over
+<code>gh-pages</code>: incremental, no publish-cadence coupling, fetchable client-side with no
+auth). On top of the hard gate's absolute 32ms budget, it applies a trailing-baseline
+check: a soft one (20% slower than the trailing 10-run mean, <code>::warning::</code> only) and
+a hard one (100% slower - i.e. at least doubled - <code>::error::</code>, fails the
+<code>persist-performance-trend</code> CI job <em>after</em> the numbers are still recorded, so a big
+regression is never silently un-recorded just because it also failed the run).</p>
+<p><code>tools/ci/append_kernel_history.py</code> does the same for <code>ac3kernelbench</code>'s per-kernel
+numbers (<code>kernels-develop.jsonl</code> / <code>kernels-main.jsonl</code>, same branch), with the same
+two trailing-baseline tiers - but both tiers are <code>::warning::</code> annotations and the
+kernel series <strong>never fails the job</strong>: a micro-kernel's ns/call on a shared CI runner
+is far noisier than a 200-frame whole-frame average, and <code>ac3perf</code> plus the
+whole-frame series already gate anything a user would feel. This page's per-kernel
+tables are where kernel regressions surface. Every series is keyed by its own kernel
+name end to end - a trailing mean over mixed kernels would be a number with no owner,
+the same conflation the quality-trend history once had to be cured of.</p>
+<p><code>tools/ci/append_memory_history.py</code> does the same for <code>ac3membench</code>'s numbers
+(<code>memory-develop.jsonl</code> / <code>memory-main.jsonl</code>, same branch), with the same two
+tiers on <strong>two</strong> churn metrics per series - allocations/frame and bytes/frame,
+either one regressing flags the record - and it gates like the whole-frame
+series does (the hard tier fails the job, after the push). One check is absolute
+rather than trend-relative: <code>steady_live_growth</code>, the bytes still held live
+after ~200 steady-state frames, warns above 4 KiB and hard-fails above 1 MiB,
+because a leak is a leak regardless of what last week's runs did.</p>
+<p>Only <code>linux-gcc</code> is measured, not the full CI matrix: a timing trend's value is in
+comparing one consistent runner against its own history over time, not in comparing
+GitHub's runner classes against each other the way the gold-reference SNR numbers
+usefully are cross-platform.</p>
+<h2 id="whole-frame-trend">Whole-frame trend<a class="headerlink" href="#whole-frame-trend" title="Permanent link">&para;</a></h2>
+<p>Each series below is a chart first, table second. The chart plots that
+series' <em>entire</em> recorded history (not just the table's last 20 rows) as
+ms/frame against commit date, with a dashed red line for the throughput
+budget and a dashed ring around any point whose commit was tagged as a
+GitHub release - hover a point for the exact commit, date and number. A
+downward slope is the improvement this whole page exists to make visible;
+release rings turn that into a release-to-release story instead of a wall
+of per-commit numbers.</p>
+<div id="performance-trend-app">
+  <p class="performance-trend-status">Loading trend data…</p>
+</div>
+
+<style>
+#performance-trend-app { margin: 1.5em 0; }
+.performance-trend-status { color: var(--md-default-fg-color--light); font-style: italic; }
+.performance-trend-chart-wrap { overflow-x: auto; margin-bottom: 0.5em; }
+.performance-trend-chart { display: block; }
+.performance-trend-legend { display: flex; gap: 1.5em; font-size: 0.8em; margin: 0.25em 0 1em; color: var(--md-default-fg-color--light); flex-wrap: wrap; }
+.performance-trend-legend span { display: inline-flex; align-items: center; gap: 0.4em; }
+.performance-trend-legend i { width: 0.9em; height: 0.9em; border-radius: 50%; display: inline-block; background: #7c4dff; }
+.performance-trend-table-wrap { overflow-x: auto; }
+#performance-trend-app table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+#performance-trend-app th, #performance-trend-app td { padding: 0.35em 0.6em; text-align: left; border-bottom: 1px solid var(--md-default-fg-color--lightest); white-space: nowrap; }
+.performance-trend-over-budget { color: var(--md-typeset-mark-color, #c62828); font-weight: 600; }
+.performance-trend-branch-heading { margin-top: 1.5em; }
+.performance-trend-release-row { background: color-mix(in srgb, var(--md-accent-fg-color, #7c4dff) 8%, transparent); }
+.performance-trend-release { text-decoration: none; font-weight: 600; }
+.performance-trend-release:hover { text-decoration: underline; }
+</style>
+
+<script>
+(function () {
+  const REPO = "iainchesworthlabs/ac3forge";
+  const HISTORY_BRANCH = "quality-history";
+  const BRANCHES = ["develop", "main"];
+  // How many of each (branch, leg, config)'s most recent rows to show in the
+  // table - a trend readout, not a full audit log. Mirrors quality-trend.md's
+  // own TABLE_ROWS in spirit, just scoped per-series instead of globally,
+  // since performance-trend.md only ever has one leg (linux-gcc) rather than
+  // quality-trend's five. The chart above each table is NOT capped to this -
+  // it plots the series' full history so a release from further back than
+  // the last 20 runs still shows up as a ring.
+  const ROWS_PER_SERIES = 20;
+  const CHART_COLOR = "#7c4dff";
+
+  const root = document.getElementById("performance-trend-app");
+
+  function rawUrl(branch, file) {
+    return `https://raw.githubusercontent.com/${REPO}/${branch}/${file}`;
+  }
+
+  function parseJsonl(text) {
+    return text.split("\n").filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+  }
+
+  async function fetchBranch(branch) {
+    try {
+      const resp = await fetch(rawUrl(HISTORY_BRANCH, `performance-${branch}.jsonl`));
+      if (!resp.ok) return [];
+      return parseJsonl(await resp.text());
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Same best-effort tag->commit join quality-trend.md already relies on:
+  // release.yml tags an existing main commit after the fact, so the tag
+  // never appears in the performance-history record for that commit itself -
+  // this is a client-side join against the GitHub API, not a second data
+  // source. A rate-limited or offline response just means no release
+  // markers, not a broken page.
+  async function fetchReleaseShaMap() {
+    let shaMap = {};
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${REPO}/tags?per_page=100`);
+      if (!resp.ok) return shaMap;
+      const tags = await resp.json();
+      for (const t of tags) {
+        if (t.commit && t.commit.sha) shaMap[t.commit.sha] = { tag: t.name, name: t.name, url: `https://github.com/${REPO}/releases/tag/${t.name}` };
+      }
+    } catch (e) {
+      return shaMap;
+    }
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=100`);
+      if (resp.ok) {
+        const releases = await resp.json();
+        const byTag = {};
+        for (const rel of releases) byTag[rel.tag_name] = rel;
+        for (const sha of Object.keys(shaMap)) {
+          const rel = byTag[shaMap[sha].tag];
+          if (rel) {
+            shaMap[sha].name = rel.name || shaMap[sha].tag;
+            shaMap[sha].prerelease = !!rel.prerelease;
+            shaMap[sha].url = rel.html_url || shaMap[sha].url;
+          }
+        }
+      }
+    } catch (e) {
+      // Tag->sha map still usable without release metadata.
+    }
+    return shaMap;
+  }
+
+  function shortSha(sha) {
+    return (sha || "").slice(0, 7);
+  }
+
+  function groupBy(records, keyFn) {
+    const groups = new Map();
+    for (const rec of records) {
+      const key = keyFn(rec);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rec);
+    }
+    return groups;
+  }
+
+  // sortedRows: full series history, oldest to newest. Budget is read off
+  // the most recent row, same as the table below - a config's budget
+  // doesn't change often, but this always reflects the current one, not a
+  // stale first-run value.
+  function buildChart(sortedRows, releasesBySha) {
+    const width = 720, height = 160, pad = { top: 10, right: 12, bottom: 22, left: 46 };
+    const budget = sortedRows.length ? sortedRows[sortedRows.length - 1].real_time_budget_ms_per_frame : null;
+    const values = sortedRows.map((r) => r.ms_per_frame).concat(budget !== null ? [budget] : []);
+    const minMs = Math.min(...values) * 0.95;
+    const maxMs = Math.max(...values) * 1.05;
+    const times = sortedRows.map((r) => Date.parse(r.commit_date));
+    const minT = Math.min(...times);
+    const maxT = Math.max(...times);
+
+    const x = (t) => pad.left + (maxT === minT ? (width - pad.left - pad.right) / 2 : ((t - minT) / (maxT - minT)) * (width - pad.left - pad.right));
+    const y = (ms) => height - pad.bottom - ((ms - minMs) / (maxMs - minMs)) * (height - pad.top - pad.bottom);
+
+    let svg = `<svg class="performance-trend-chart" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="ms per frame by commit date">`;
+    for (let i = 0; i <= 3; i++) {
+      const ms = minMs + ((maxMs - minMs) * i) / 3;
+      const gy = y(ms);
+      svg += `<line x1="${pad.left}" y1="${gy}" x2="${width - pad.right}" y2="${gy}" stroke="var(--md-default-fg-color--lightest)" stroke-width="1"/>`;
+      svg += `<text x="${pad.left - 6}" y="${gy + 3}" text-anchor="end" font-size="10" fill="var(--md-default-fg-color--light)">${ms.toFixed(2)}</text>`;
+    }
+    if (budget !== null) {
+      const by = y(budget);
+      svg += `<line x1="${pad.left}" y1="${by}" x2="${width - pad.right}" y2="${by}" stroke="var(--md-typeset-mark-color, #c62828)" stroke-width="1" stroke-dasharray="4,3"><title>Budget: ${budget.toFixed(3)} ms/frame</title></line>`;
+    }
+    svg += `<text x="${pad.left}" y="${height - 6}" text-anchor="start" font-size="10" fill="var(--md-default-fg-color--light)">${new Date(minT).toISOString().slice(0, 10)}</text>`;
+    svg += `<text x="${width - pad.right}" y="${height - 6}" text-anchor="end" font-size="10" fill="var(--md-default-fg-color--light)">${new Date(maxT).toISOString().slice(0, 10)}</text>`;
+
+    if (sortedRows.length > 1) {
+      const path = sortedRows.map((r, i) => `${i === 0 ? "M" : "L"}${x(Date.parse(r.commit_date)).toFixed(1)},${y(r.ms_per_frame).toFixed(1)}`).join(" ");
+      svg += `<path d="${path}" fill="none" stroke="${CHART_COLOR}" stroke-width="2"/>`;
+    }
+    sortedRows.forEach((r) => {
+      const cx = x(Date.parse(r.commit_date)).toFixed(1);
+      const cy = y(r.ms_per_frame).toFixed(1);
+      const release = releasesBySha[r.commit];
+      const title = `${shortSha(r.commit)} - ${r.ms_per_frame.toFixed(3)} ms/frame on ${r.commit_date.slice(0, 10)}${release ? ` - release ${release.name}` : ""}`;
+      svg += `<circle cx="${cx}" cy="${cy}" r="3" fill="${CHART_COLOR}"><title>${title}</title></circle>`;
+      if (release) {
+        svg += `<circle cx="${cx}" cy="${cy}" r="6.5" fill="none" stroke="${CHART_COLOR}" stroke-width="1.5" stroke-dasharray="2,1.5"><title>${title}</title></circle>`;
+      }
+    });
+    svg += "</svg>";
+    return svg;
+  }
+
+  function buildLegend(sortedRows, releasesBySha) {
+    const anyRelease = sortedRows.some((r) => releasesBySha[r.commit]);
+    const items = [
+      '<span><i></i>ms/frame</span>',
+      '<span><i style="background:none;border:1.5px dashed var(--md-typeset-mark-color, #c62828);border-radius:0;"></i>budget</span>',
+    ];
+    if (anyRelease) {
+      items.push('<span><i style="background:none;border:1.5px dashed var(--md-default-fg-color--light);"></i>tagged release</span>');
+    }
+    return `<div class="performance-trend-legend">${items.join("")}</div>`;
+  }
+
+  function renderSeries(leg, config, rows, releasesBySha) {
+    const sorted = rows.slice().sort((a, b) => a.commit_date.localeCompare(b.commit_date));
+    const recent = sorted.slice(-ROWS_PER_SERIES).reverse();
+    const budget = sorted.length ? sorted[sorted.length - 1].real_time_budget_ms_per_frame : null;
+    const trs = recent.map((r) => {
+      const overBudget = budget !== null && r.ms_per_frame > budget;
+      const release = releasesBySha[r.commit];
+      const classes = [overBudget ? "performance-trend-over-budget" : "", release ? "performance-trend-release-row" : ""].filter(Boolean).join(" ");
+      const releaseBadge = release
+        ? `<a class="performance-trend-release" href="${release.url}" title="${release.prerelease ? "Prerelease" : "Release"} tagged at this commit">🏷 ${release.name}</a>`
+        : "";
+      return `<tr${classes ? ` class="${classes}"` : ""}>
+        <td>${r.commit_date ? r.commit_date.slice(0, 10) : ""}</td>
+        <td><a href="https://github.com/${REPO}/commit/${r.commit}">${shortSha(r.commit)}</a></td>
+        <td>${r.ms_per_frame.toFixed(3)}</td>
+        <td>${budget !== null ? budget.toFixed(3) : ""}</td>
+        <td>${r.frames}</td>
+        <td>${releaseBadge}</td>
+      </tr>`;
+    }).join("");
+
+    return `<h4>${leg} / ${config}</h4>
+    <div class="performance-trend-chart-wrap">${buildChart(sorted, releasesBySha)}</div>
+    ${buildLegend(sorted, releasesBySha)}
+    <div class="performance-trend-table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Commit</th><th>ms/frame</th><th>Budget (ms/frame)</th><th>Frames</th><th>Release</th></tr></thead>
+        <tbody>${trs}</tbody>
+      </table>
+    </div>`;
+  }
+
+  function renderBranch(branch, records, releasesBySha) {
+    if (records.length === 0) {
+      return `<h3 class="performance-trend-branch-heading">${branch}</h3><p><em>No data yet.</em></p>`;
+    }
+    const groups = groupBy(records, (r) => `${r.leg} ${r.config}`);
+    const sections = [...groups.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, rows]) => {
+        const [leg, config] = key.split(" ");
+        return renderSeries(leg, config, rows, releasesBySha);
+      })
+      .join("\n");
+    return `<h3 class="performance-trend-branch-heading">${branch}</h3>${sections}`;
+  }
+
+  async function render() {
+    const [perBranch, releasesBySha] = await Promise.all([
+      Promise.all(BRANCHES.map(fetchBranch)),
+      fetchReleaseShaMap(),
+    ]);
+    const anyData = perBranch.some((records) => records.length > 0);
+    if (!anyData) {
+      root.innerHTML = '<p class="performance-trend-status">No performance-trend data recorded yet - it appears after the first develop/main push that reaches the persist-performance-trend CI job.</p>';
+      return;
+    }
+    root.innerHTML = BRANCHES.map((branch, i) => renderBranch(branch, perBranch[i], releasesBySha)).join("\n");
+  }
+
+  render();
+})();
+</script>
+
+<h2 id="per-kernel-trend">Per-kernel trend<a class="headerlink" href="#per-kernel-trend" title="Permanent link">&para;</a></h2>
+<p>Same commits, one level finer: each kernel's ns/call from <code>ac3kernelbench</code>, one
+series per kernel. The Δ column is each run against its own series' trailing
+10-run mean - the same window and thresholds <code>append_kernel_history.py</code> annotates
+with: ≥ +20% is flagged as a soft drift, ≥ +100% as a hard one. Neither ever fails
+CI (see above); a flagged row here is an invitation to look, not a broken build.</p>
+<div id="kernel-trend-app">
+  <p class="performance-trend-status">Loading kernel trend data…</p>
+</div>
+
+<style>
+#kernel-trend-app { margin: 1.5em 0; }
+#kernel-trend-app table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+#kernel-trend-app th, #kernel-trend-app td { padding: 0.35em 0.6em; text-align: left; border-bottom: 1px solid var(--md-default-fg-color--lightest); white-space: nowrap; }
+.kernel-trend-soft { color: var(--md-warning-fg-color, #e65100); font-weight: 600; }
+.kernel-trend-hard { color: var(--md-typeset-mark-color, #c62828); font-weight: 600; }
+</style>
+
+<script>
+(function () {
+  const REPO = "iainchesworthlabs/ac3forge";
+  const HISTORY_BRANCH = "quality-history";
+  const BRANCHES = ["develop", "main"];
+  // Fewer rows per series than the whole-frame tables' 20: there are a dozen-plus
+  // kernel series to the whole-frame tables' handful of configs, and this page is
+  // a trend readout, not an audit log - the JSONL keeps everything.
+  const ROWS_PER_SERIES = 10;
+  // Mirrors append_kernel_history.py's REGRESSION_TRAILING_WINDOW and its two
+  // annotation tiers, so a flagged row here and a ::warning:: in the CI log are
+  // the same statement about the same numbers.
+  const TRAILING_WINDOW = 10;
+  const SOFT_FRACTION = 0.20;
+  const HARD_FRACTION = 1.0;
+
+  const root = document.getElementById("kernel-trend-app");
+
+  function rawUrl(branch, file) {
+    return `https://raw.githubusercontent.com/${REPO}/${branch}/${file}`;
+  }
+
+  function parseJsonl(text) {
+    return text.split("\n").filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+  }
+
+  async function fetchBranch(branch) {
+    try {
+      const resp = await fetch(rawUrl(HISTORY_BRANCH, `kernels-${branch}.jsonl`));
+      if (!resp.ok) return [];
+      return parseJsonl(await resp.text());
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function shortSha(sha) {
+    return (sha || "").slice(0, 7);
+  }
+
+  function groupBy(records, keyFn) {
+    const groups = new Map();
+    for (const rec of records) {
+      const key = keyFn(rec);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rec);
+    }
+    return groups;
+  }
+
+  function formatNs(ns) {
+    return ns >= 100 ? ns.toFixed(0) : ns.toFixed(1);
+  }
+
+  function renderSeries(leg, kernel, rows) {
+    // Each row's baseline is the trailing mean of the rows BEFORE it - the
+    // same the-append-script-saw-it semantics as the CI annotations, which
+    // compute the baseline before appending the new record.
+    const annotated = rows.map((r, i) => {
+      const tail = rows.slice(Math.max(0, i - TRAILING_WINDOW), i).map((p) => p.ns_per_call);
+      const baseline = tail.length ? tail.reduce((a, b) => a + b, 0) / tail.length : null;
+      const slowdown = baseline && baseline > 0 ? (r.ns_per_call - baseline) / baseline : null;
+      return { ...r, slowdown };
+    });
+    const recent = annotated.slice(-ROWS_PER_SERIES).reverse();
+    const trs = recent.map((r) => {
+      let cls = "";
+      if (r.slowdown !== null && r.slowdown >= HARD_FRACTION) cls = ' class="kernel-trend-hard"';
+      else if (r.slowdown !== null && r.slowdown >= SOFT_FRACTION) cls = ' class="kernel-trend-soft"';
+      const delta = r.slowdown === null ? "" : `${r.slowdown >= 0 ? "+" : ""}${(r.slowdown * 100).toFixed(1)}%`;
+      return `<tr${cls}>
+        <td>${r.commit_date ? r.commit_date.slice(0, 10) : ""}</td>
+        <td><a href="https://github.com/${REPO}/commit/${r.commit}">${shortSha(r.commit)}</a></td>
+        <td>${formatNs(r.ns_per_call)}</td>
+        <td>${delta}</td>
+        <td>${r.iters}</td>
+      </tr>`;
+    }).join("");
+
+    return `<h4>${leg} / ${kernel}</h4>
+    <div class="performance-trend-table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Commit</th><th>ns/call</th><th>Δ vs trailing mean</th><th>Iters</th></tr></thead>
+        <tbody>${trs}</tbody>
+      </table>
+    </div>`;
+  }
+
+  function renderBranch(branch, records) {
+    if (records.length === 0) {
+      return `<h3 class="performance-trend-branch-heading">${branch}</h3><p><em>No data yet.</em></p>`;
+    }
+    // Grouped per (leg, kernel), never merged across kernels - a series is
+    // only meaningful against its own history.
+    const groups = groupBy(records, (r) => `${r.leg} ${r.kernel}`);
+    const sections = [...groups.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, rows]) => {
+        const [leg, kernel] = key.split(" ");
+        return renderSeries(leg, kernel, rows);
+      })
+      .join("\n");
+    return `<h3 class="performance-trend-branch-heading">${branch}</h3>${sections}`;
+  }
+
+  async function render() {
+    const perBranch = await Promise.all(BRANCHES.map(fetchBranch));
+    const anyData = perBranch.some((records) => records.length > 0);
+    if (!anyData) {
+      root.innerHTML = '<p class="performance-trend-status">No kernel-trend data recorded yet - it appears after the first develop/main push that reaches the persist-performance-trend CI job.</p>';
+      return;
+    }
+    root.innerHTML = BRANCHES.map((branch, i) => renderBranch(branch, perBranch[i])).join("\n");
+  }
+
+  render();
+})();
+</script>
+
+<h2 id="memory-trend">Memory trend<a class="headerlink" href="#memory-trend" title="Permanent link">&para;</a></h2>
+<p>Same commits, a different resource: each workload's heap-allocation count and
+allocator traffic per frame from <code>ac3membench</code>, one series per workload -
+including the decode paths the timing benches don't cover. The Δ column is
+bytes/frame against the series' trailing 10-run mean, the same window and
+thresholds <code>append_memory_history.py</code> gates with (≥ +20% soft, ≥ +100% hard on
+<em>either</em> churn metric); a non-zero <strong>live growth</strong> is its own signal (bytes
+still held after ~200 steady-state frames - the leak check is absolute, not
+trend-relative). These counts are near-deterministic for a fixed workload: a
+flagged row is a real change in allocation behaviour, not runner noise. The
+memory-usage optimization programme's phases land as visible downward steps in
+these series - that is what this table exists to show.</p>
+<p>Two landed programmes are the biggest steps in these series. The 2026-08
+memory-usage programme cut steady-state allocator traffic per frame by 85-88%
+on the encode series (on the measured <code>linux-gcc</code> runner: AC-3 encode
+225,028 → 26,778 bytes/frame and 286 → 86 allocations; E-AC-3
+214,808 → 28,792 and 157 → 67; Atmos 218,960 → 32,656 and 196 → 106) and
+54-61% on the decode series - and, outside these tables, took every
+output-producing CLI command memory-flat at any programme length (a 3-minute
+5.1 encode peaked at 437.8 MiB before the programme and 9.3 MiB after;
+decode 217 → 28.5 MiB, <code>spdif</code> 225.7 → 18.0 MiB).</p>
+<p>The fast-IMDCT rollout that followed
+(<a href="../verification/#performance-and-reference-modes">Validation → Performance and reference modes</a>)
+lands in the decode series as two distinct marks. The flat-substream-state
+change shows directly: the decode workloads' setup allocations dropped from
+4 allocations / 47,606 bytes to exactly zero. The transform change itself
+mostly does not show in heap columns, and knowing why matters for reading
+the table: the direct evaluation's 320 KiB of step-3 matrices are lazily
+built <em>static</em> storage, so switching the default to the FFT path removes
+them from the process (a 3-minute CLI decode's peak working set drops
+~0.2-0.3 MiB) without moving an allocation count. Its real payoff is time,
+which the timing series on this page do not cover (they time encode only):
+measured 180-second decodes went from 3.53 s to 0.79 s (AC-3) and 3.49 s to
+0.75 s (E-AC-3) when the fast path became the default - <code>mode=reference</code>
+runs the old numbers on purpose.</p>
+<div id="memory-trend-app">
+  <p class="performance-trend-status">Loading memory trend data…</p>
+</div>
+
+<style>
+#memory-trend-app { margin: 1.5em 0; }
+#memory-trend-app table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+#memory-trend-app th, #memory-trend-app td { padding: 0.35em 0.6em; text-align: left; border-bottom: 1px solid var(--md-default-fg-color--lightest); white-space: nowrap; }
+</style>
+
+<script>
+(function () {
+  const REPO = "iainchesworthlabs/ac3forge";
+  const HISTORY_BRANCH = "quality-history";
+  const BRANCHES = ["develop", "main"];
+  const ROWS_PER_SERIES = 10;
+  // Mirrors append_memory_history.py's window and tiers, so a flagged row
+  // here and an annotation in the CI log are the same statement about the
+  // same numbers. The flag is on the WORSE of the two churn metrics.
+  const TRAILING_WINDOW = 10;
+  const SOFT_FRACTION = 0.20;
+  const HARD_FRACTION = 1.0;
+
+  const root = document.getElementById("memory-trend-app");
+
+  function rawUrl(branch, file) {
+    return `https://raw.githubusercontent.com/${REPO}/${branch}/${file}`;
+  }
+
+  function parseJsonl(text) {
+    return text.split("\n").filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+  }
+
+  async function fetchBranch(branch) {
+    try {
+      const resp = await fetch(rawUrl(HISTORY_BRANCH, `memory-${branch}.jsonl`));
+      if (!resp.ok) return [];
+      return parseJsonl(await resp.text());
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function shortSha(sha) {
+    return (sha || "").slice(0, 7);
+  }
+
+  function groupBy(records, keyFn) {
+    const groups = new Map();
+    for (const rec of records) {
+      const key = keyFn(rec);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rec);
+    }
+    return groups;
+  }
+
+  function formatBytes(b) {
+    if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MiB`;
+    if (b >= 1024) return `${(b / 1024).toFixed(1)} KiB`;
+    return `${Math.round(b)} B`;
+  }
+
+  function metricGrowth(rows, i, metric) {
+    const tail = rows.slice(Math.max(0, i - TRAILING_WINDOW), i).map((p) => p[metric]);
+    const baseline = tail.length ? tail.reduce((a, b) => a + b, 0) / tail.length : null;
+    if (baseline === null || baseline <= 0) return null;
+    return (rows[i][metric] - baseline) / baseline;
+  }
+
+  function renderSeries(leg, config, rows) {
+    // Same the-append-script-saw-it semantics as the kernel tables: each
+    // row's baseline is the trailing mean of the rows BEFORE it.
+    const annotated = rows.map((r, i) => {
+      const allocsGrowth = metricGrowth(rows, i, "allocs_per_frame");
+      const bytesGrowth = metricGrowth(rows, i, "bytes_per_frame");
+      const worst = [allocsGrowth, bytesGrowth].filter((g) => g !== null)
+        .reduce((a, b) => Math.max(a, b), -Infinity);
+      return { ...r, bytesGrowth, worst: worst === -Infinity ? null : worst };
+    });
+    const recent = annotated.slice(-ROWS_PER_SERIES).reverse();
+    const trs = recent.map((r) => {
+      let cls = "";
+      if (r.worst !== null && r.worst >= HARD_FRACTION) cls = ' class="kernel-trend-hard"';
+      else if (r.worst !== null && r.worst >= SOFT_FRACTION) cls = ' class="kernel-trend-soft"';
+      const delta = r.bytesGrowth === null ? "" : `${r.bytesGrowth >= 0 ? "+" : ""}${(r.bytesGrowth * 100).toFixed(1)}%`;
+      return `<tr${cls}>
+        <td>${r.commit_date ? r.commit_date.slice(0, 10) : ""}</td>
+        <td><a href="https://github.com/${REPO}/commit/${r.commit}">${shortSha(r.commit)}</a></td>
+        <td>${r.allocs_per_frame.toFixed(1)}</td>
+        <td>${formatBytes(r.bytes_per_frame)}</td>
+        <td>${r.steady_live_growth === 0 ? "0" : formatBytes(r.steady_live_growth)}</td>
+        <td>${delta}</td>
+        <td>${formatBytes(r.peak_rss_bytes)}</td>
+      </tr>`;
+    }).join("");
+
+    return `<h4>${leg} / ${config}</h4>
+    <div class="performance-trend-table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Commit</th><th>Allocs/frame</th><th>Bytes/frame</th><th>Live growth</th><th>Δ bytes vs trailing mean</th><th>Peak RSS</th></tr></thead>
+        <tbody>${trs}</tbody>
+      </table>
+    </div>`;
+  }
+
+  function renderBranch(branch, records) {
+    if (records.length === 0) {
+      return `<h3 class="performance-trend-branch-heading">${branch}</h3><p><em>No data yet.</em></p>`;
+    }
+    const groups = groupBy(records, (r) => `${r.leg} ${r.config}`);
+    const sections = [...groups.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, rows]) => {
+        const [leg, config] = key.split(" ");
+        return renderSeries(leg, config, rows);
+      })
+      .join("\n");
+    return `<h3 class="performance-trend-branch-heading">${branch}</h3>${sections}`;
+  }
+
+  async function render() {
+    const perBranch = await Promise.all(BRANCHES.map(fetchBranch));
+    const anyData = perBranch.some((records) => records.length > 0);
+    if (!anyData) {
+      root.innerHTML = '<p class="performance-trend-status">No memory-trend data recorded yet - it appears after the first develop/main push that reaches the persist-performance-trend CI job.</p>';
+      return;
+    }
+    root.innerHTML = BRANCHES.map((branch, i) => renderBranch(branch, perBranch[i])).join("\n");
+  }
+
+  render();
+})();
+</script>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.indexes", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
