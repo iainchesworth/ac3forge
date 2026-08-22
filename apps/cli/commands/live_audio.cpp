@@ -380,7 +380,11 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
             static_cast<int>(nobjects));
     }
     auto ac3_monitor_decoder = std::make_unique<ac3::FrameDecoder>();
-    ac3::Eac3Decoder eac3_monitor_decoder;
+    // Heap-allocated (PREfast's C6262, alert #89): Eac3Decoder's per-block
+    // scratch members pushed this stack declaration over the threshold, same
+    // as the two decoders just above - same pattern as
+    // examples/atmos_objects.cpp (PR #295).
+    auto eac3_monitor_decoder = std::make_unique<ac3::Eac3Decoder>();
     ac3::iec61937::Eac3BurstPacker eac3_packer;
 
     // Object mode meters the 5.1 bed (matching encodeObjects/run_atmos_encode
@@ -521,7 +525,7 @@ int run_live(std::string_view out_path, int capture_device, std::uint32_t second
         if (monitoring) {
             std::optional<std::vector<float>> to_play;
             if (atmos) {
-                const auto decoded = eac3_monitor_decoder.decode_access_unit(unit_bytes);
+                const auto decoded = eac3_monitor_decoder->decode_access_unit(unit_bytes);
                 // §3.7: decoded->has_value() is false exactly when this
                 // access unit is being held back pending transient
                 // pre-noise processing (decode_access_unit's own doc

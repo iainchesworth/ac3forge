@@ -4133,7 +4133,11 @@ void EncoderController::runLiveSession(ac3::audio::DeviceInfo device,
                 static_cast<int>(nobjects));
         }
         auto ac3_monitor_decoder = std::make_unique<ac3::FrameDecoder>();
-        ac3::Eac3Decoder eac3_monitor_decoder;
+        // Heap-allocated (PREfast's C6262, alert #90): Eac3Decoder's
+        // per-block scratch members pushed this lambda's stack frame over
+        // the threshold, same as the encoders/decoder just above - same
+        // pattern as examples/atmos_objects.cpp (PR #295).
+        auto eac3_monitor_decoder = std::make_unique<ac3::Eac3Decoder>();
         ac3::iec61937::Eac3BurstPacker eac3_packer;
         // The parallel receiver leg: an independent AC-3 5.1 encoder fed the
         // main plan's already-computed bed channels (chan_views[0..5] for a
@@ -4467,7 +4471,7 @@ void EncoderController::runLiveSession(ac3::audio::DeviceInfo device,
             if (monitor) {
                 std::optional<std::vector<float>> to_play;
                 if (eac3) {
-                    const auto decoded = eac3_monitor_decoder.decode_access_unit(unit_bytes);
+                    const auto decoded = eac3_monitor_decoder->decode_access_unit(unit_bytes);
                     // §3.7: decoded->has_value() is false exactly when this
                     // access unit is being held back pending transient
                     // pre-noise processing (decode_access_unit's own doc

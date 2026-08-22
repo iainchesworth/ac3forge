@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <optional>
 #include <print>
 #include <span>
@@ -185,7 +186,10 @@ std::optional<QcResult> measure_qc_eac3(std::span<const std::byte> stream) {
         std::println(stderr, "error: not a valid E-AC-3 stream");
         return std::nullopt;
     }
-    ac3::Eac3Decoder decoder;
+    // Heap-allocated (PREfast's C6262, alert #93): Eac3Decoder's per-block
+    // scratch members pushed this stack declaration over the threshold -
+    // same pattern as examples/atmos_objects.cpp (PR #295).
+    auto decoder = std::make_unique<ac3::Eac3Decoder>();
     QcResult result;
     result.codec_label = "E-AC-3";
     result.unit_label = "access unit(s)";
@@ -240,7 +244,7 @@ std::optional<QcResult> measure_qc_eac3(std::span<const std::byte> stream) {
     };
 
     for (const auto& frame : *frames) {
-        const auto decoded = decoder.decode_substream(frame);
+        const auto decoded = decoder->decode_substream(frame);
         if (!decoded) {
             std::println(stderr, "error: decode failed (code {})",
                          static_cast<int>(decoded.error()));
@@ -255,7 +259,7 @@ std::optional<QcResult> measure_qc_eac3(std::span<const std::byte> stream) {
     }
     // Whatever transient pre-noise processing was still holding back at
     // end-of-stream, same convention run_decode_eac3 follows.
-    for (const auto& sub : decoder.flush()) {
+    for (const auto& sub : decoder->flush()) {
         ingest(sub);
     }
 
