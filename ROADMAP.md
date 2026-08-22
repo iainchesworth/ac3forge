@@ -57,7 +57,35 @@ mixes are delivered as master files.
   `-DAC3FORGE_BUILD_ADM=ON` (needs Boost, see `vcpkg.json`'s `adm` feature) — the only third-party
   dependency anywhere in this project, and deliberately not default-on.
 - [ ] **B2 (M)** — DAMF reader: the `.atmos` / `.atmos.metadata` / `.atmos.audio` triple,
-  sharing B1's mapping layer.
+  sharing B1's mapping layer. **Blocked on this project's own clean-room rule** (see
+  `CONTRIBUTING.md`), not on effort: unlike AC-3, E-AC-3 and ADM — all covered by real,
+  purchasable/freely-downloadable, section-citable standards (ATSC A/52, ETSI TS 102 366/TS 103
+  420, ITU-R BS.2076-2/BS.2088-1) — Dolby has not published an official specification for DAMF's
+  own byte/XML layout. Checked before writing any code: Dolby's professional and developer
+  portals (`professionalsupport.dolby.com`, `developer.dolby.com`, `developerkb.dolby.com`), the
+  Dolby Atmos Renderer Guide (a user/operator guide, not a format spec — no XML schema or field
+  table anywhere in it), and the SMPTE standards catalog. Two adjacent Dolby Atmos deliverables
+  *do* have real, citable specs, and neither is this one: "Dolby Atmos Master ADM Profile v1.0"
+  (a freely downloadable PDF at `developer.dolby.com`) specifies the ADM BWF alternative to
+  DAMF — already this project's B1, cited via its own ITU-R sources, not this one — and SMPTE RDD
+  28 ("Dolby Atmos Print Master File Specification") specifies the *cinema* `.rpl` print master a
+  Dolby RMU builds for DCP/DCDM delivery, a related but different deliverable for a different
+  distribution channel. The Library of Congress's own digital-preservation format registry
+  confirms the gap directly (`fdd000646`, "Dolby Atmos Master File", last updated 2025-04-18):
+  "There is no open specification for DAMF, including for the metadata requirements." What public
+  knowledge of DAMF's layout exists — Hybrik's own tutorial, Telestream's and encoding.com's docs,
+  community write-ups, and at least one open-source reverse-engineered parser on GitHub — is
+  exactly the kind of third-party-observed knowledge `CONTRIBUTING.md`'s clean-room rule permits
+  for architecture lessons only, never transcription, and none of it carries a section number this
+  project could cite the way every other module here does. This is not a rejection of DAMF, only
+  of building it from that knowledge: if Dolby (or a standards body) publishes a real DAMF
+  specification the way it did for the ADM profile, B2 becomes buildable again — and, going only
+  by the *publicly described shape* of the format (an XML index file, an XML object/bed
+  position-over-time metadata file, a CAF audio file) rather than any of its actual field layout,
+  it looks conceptually close enough to ADM's own object/bed model that populating an
+  `ac3adm::AdmDocument` and handing it to the existing `ac3::admbridge::build()`
+  (`src/adm_bridge/`) looks more likely than a second, parallel mapping layer — a design call for
+  whoever picks this up once a citable source exists, not a decision made here.
 - [ ] **B3 (XL)** — IAMF / Eclipsa Audio interop: shared ADM ingest, possibly growing into
   E-AC-3+JOC ↔ IAMF conversion.
 

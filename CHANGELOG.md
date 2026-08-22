@@ -222,6 +222,14 @@ bindings on PyPI and a C API over the encode/decode core.
 See [Validation](docs/verification.md) for the full account of what is and isn't independently
 verified.
 
+### Known gaps
+
+- **Roadmap B2 (DAMF reader) is blocked, not merely undone.** Dolby has not published an official
+  specification for the `.atmos`/`.atmos.metadata`/`.atmos.audio` triple's own byte/XML layout,
+  unlike every other format this project reads or writes — see `ROADMAP.md`'s B2 entry for what
+  was checked and why this project's own clean-room rule (`CONTRIBUTING.md`) rules out building it
+  from the third-party, reverse-engineered knowledge that is publicly available instead.
+
 ## [0.8.0-beta.1] - 2026-08-17
 
 Seventh tagged release. The repository moved from `iainchesworth/ac3forge` to
