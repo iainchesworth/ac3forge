@@ -42,6 +42,14 @@
 #   escapes its assumed range, which is the more precise tool for exactly
 #   this class of bug - see the coupling-exponent precedent in 8386c8f.
 #
+# WarningsAsErrors matches the -warnings-as-errors='*' flag ci.yml's
+# static-analysis job has always passed, so a plain local `clang-tidy` (or
+# run-clang-tidy) invocation exits non-zero on a finding exactly like CI
+# does instead of printing a warning and exiting 0. (clangd ignores this
+# key, so IDE diagnostics are unaffected. And when verifying locally,
+# trust the printed "error:" lines over the exit code: WSL2's
+# clang-tidy-21 has been seen exiting 0 despite emitting them.)
+#
 # A fifth addition, layered on later: misc-include-cleaner (the single
 # check, not the whole misc-* group - the rest of misc-* is the same kind of
 # stylistic noise the NOT-enabled groups above are excluded for). It flags a
@@ -83,6 +91,6 @@ Checks: >
   cert-pos47-c,
   cert-str34-c
 
-WarningsAsErrors: ''
+WarningsAsErrors: '*'
 HeaderFilterRegex: '(src/(forge|matroska)|apps/cli)/.*'
 FormatStyle: none
