@@ -1,9 +1,18 @@
+#include "ac3/core/tables.hpp"
 #include "ac3/decoder/decoder.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <memory>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include "ac3/core/aht_tables.hpp"
 #include "ac3/core/bitalloc.hpp"

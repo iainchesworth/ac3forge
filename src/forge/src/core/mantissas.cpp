@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 
+#include "ac3/core/bitreader.hpp"
 #include "ac3/internal/profiling.hpp"
 
 namespace ac3 {

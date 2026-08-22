@@ -4,11 +4,22 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <span>
+#include <vector>
 
 #include "ac3/core/mdct.hpp"
-#include "ac3/core/window.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/emdf/emdf.hpp"
+#include "ac3/encoder/eac3_frame.hpp"
+#include "ac3/encoder/silent_frame.hpp"
 #include "ac3/internal/profiling.hpp"
+#include "ac3/oba/joc.hpp"
+#include "ac3/oba/joc_tables.hpp"
+#include "ac3/oba/oamd.hpp"
+#include "ac3/spatial/spatial.hpp"
 
 namespace ac3::oba {
 

@@ -2,8 +2,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
 #include <print>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
+#include "ac3/core/tables.hpp"
+#include "ac3/encoder/assignment.hpp"
+#include "ac3/encoder/plan.hpp"
+#include "ac3/io/wav.hpp"
 #include "support.hpp"
 
 namespace ac3cli {

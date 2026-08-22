@@ -1,7 +1,14 @@
 #include "matroska/matroska.hpp"
 
 #include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
 #include <limits>
+#include <span>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace matroska {
 

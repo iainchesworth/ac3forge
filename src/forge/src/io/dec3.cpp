@@ -1,10 +1,13 @@
 #include "ac3/io/dec3.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "ac3/core/bitwriter.hpp"
 #include "ac3/core/tables.hpp"
+#include "ac3/io/elementary.hpp"
 
 namespace ac3::io {
 

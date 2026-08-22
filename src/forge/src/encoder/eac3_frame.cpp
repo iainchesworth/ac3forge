@@ -1,21 +1,34 @@
 #include "ac3/encoder/eac3_frame.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <memory>
 #include <numbers>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include "ac3/core/bitalloc.hpp"
 #include "ac3/core/bitwriter.hpp"
 #include "ac3/core/crc16.hpp"
+#include "ac3/core/eac3_tables.hpp"
 #include "ac3/core/exponents.hpp"
 #include "ac3/core/mantissas.hpp"
 #include "ac3/core/mdct.hpp"
-#include "ac3/core/window.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/encoder/coupling.hpp"
 #include "ac3/encoder/eac3_tools.hpp"
+#include "ac3/encoder/silent_frame.hpp"
 #include "ac3/internal/profiling.hpp"
 
+#include "ac3/meta/drc.hpp"
+#include "ac3/meta/mixing.hpp"
 #include "snr_search.hpp"
 
 namespace ac3::eac3 {

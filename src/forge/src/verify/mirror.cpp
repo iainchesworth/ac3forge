@@ -1,6 +1,13 @@
 #include "ac3/verify/mirror.hpp"
 
-#include <algorithm>
+#include "ac3/core/bitalloc.hpp"
+#include "ac3/core/tables.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace ac3::verify {
 

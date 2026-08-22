@@ -1,8 +1,14 @@
 #include "ac3/meta/loudness.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
+#include "ac3/core/tables.hpp"
+#include <optional>
+#include <span>
+#include <vector>
 
 namespace ac3::meta {
 

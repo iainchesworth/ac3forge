@@ -1,16 +1,20 @@
 #include "containers.hpp"
 
-#include <cstdio>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <ios>
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
 #include "ac3/analysis/levels.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/io/dec3.hpp"
 #include "ac3/io/elementary.hpp"
 #include "matroska/matroska.hpp"

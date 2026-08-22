@@ -2,9 +2,9 @@
 
 #include <array>
 #include <cmath>
-#include <cstdint>
+#include <cstddef>
 #include <numbers>
-#include <utility>
+#include <span>
 
 #include "ac3/core/window.hpp"
 

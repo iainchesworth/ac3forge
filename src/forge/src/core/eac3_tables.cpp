@@ -1,6 +1,12 @@
 #include "ac3/core/eac3_tables.hpp"
 
 #include <array>
+#include "ac3/core/tables.hpp"
+#include <cstdint>
+#include <expected>
+#include <optional>
+#include <string_view>
+#include <utility>
 
 // The dynamic channel allocator (A/52 Annex E, Table E2.5 / Table 5.8). See
 // eac3_tables.hpp for what each piece is for; this file is where the

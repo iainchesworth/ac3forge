@@ -5,6 +5,17 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/tables.hpp"
+#include "ac3/encoder/eac3_frame.hpp"
+#include "ac3/encoder/plan.hpp"
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
 
 namespace ac3::plan {
 

@@ -4,8 +4,12 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numbers>
+#include <span>
+#include <utility>
 
 #include "ac3/core/aht_tables.hpp"
 #include "ac3/core/fft.hpp"
