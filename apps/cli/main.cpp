@@ -1,14 +1,10 @@
-#include <algorithm>
 #include <array>
 #include <charconv>
-#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <cstdint>
 #include <cstdio>
-#include <expected>
 #include <format>
-#include <optional>
 #include <print>
 #include <span>
 #include <string>
@@ -16,17 +12,9 @@
 #include <system_error>
 #include <vector>
 
-#include "ac3/analysis/levels.hpp"
-#include "ac3/core/eac3_tables.hpp"
-#include "ac3/core/tables.hpp"
-#include "ac3/decoder/decoder.hpp"
 #include "ac3/encoder/plan.hpp"
-#include "ac3/io/wav.hpp"
-#include "ac3/meta/drc.hpp"
-#include "ac3/meta/loudness.hpp"
 #include "ac3/meta/qc.hpp"
 #include "ac3/audio/audio_backend.hpp"
-#include "ac3/sinks/iec61937.hpp"
 #include "ac3/version.hpp"
 #include "adm/atmos_adm.hpp"
 #include "commands/analysis.hpp"
