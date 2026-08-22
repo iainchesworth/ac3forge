@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# Copied verbatim from aqualink-automate
-# (cicd/packer/scripts/linux/02-gcc-toolchain.sh) so the two projects pin the same
-# toolchain — if you change the fallback logic here, port it back there too.
+# Copied verbatim from the org-shared runner fleet repo, iainchesworthlabs/ci-runners
+# (scripts/linux/02-gcc-toolchain.sh), so the fleet's baked toolchain and this repo's
+# CI stay pinned to the same GCC — if you change the fallback logic here, port it
+# back there too.
 # Consumed by .github/workflows/_build.yml, which runs it with sudo on the
 # GitHub-hosted *and* self-hosted Ubuntu runner (both land on the same
 # ubuntu:26.04 container image; nothing is baked into a runner image, see

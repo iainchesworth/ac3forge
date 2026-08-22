@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# Copied verbatim from aqualink-automate
-# (cicd/packer/scripts/linux/03-llvm-toolchain.sh) so the two projects pin the same
-# toolchain. Consumed by .github/workflows/_build.yml, which runs it with sudo
-# on the GitHub-hosted Ubuntu runner. Verified against Ubuntu 26.04 LTS, where
-# the distro archive carries both compilers (gcc 15.2.0, clang 21.1.8) and
-# neither fallback path is taken.
+# Copied verbatim from the org-shared runner fleet repo, iainchesworthlabs/ci-runners
+# (scripts/linux/03-llvm-toolchain.sh), so the fleet's baked toolchain and this
+# repo's CI stay pinned to the same LLVM. Consumed by .github/workflows/_build.yml,
+# which runs it with sudo on the GitHub-hosted Ubuntu runner. Verified against
+# Ubuntu 26.04 LTS, where the distro archive carries both compilers (gcc 15.2.0,
+# clang 21.1.8) and neither fallback path is taken.
 #
 
 # LLVM/Clang major version the project pins to. Keep this in step with the

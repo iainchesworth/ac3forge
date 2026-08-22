@@ -84,7 +84,8 @@ below for what differs and why).
    somewhere is read from that real location instead of being duplicated into the manifest
    too: GCC/LLVM majors come from `.github/toolchain/02-gcc-toolchain.sh` and
    `03-llvm-toolchain.sh` (the scripts that actually install them - copied verbatim from
-   `aqualink-automate` so both projects track the same toolchain), CMake's minimum from
+   [`ci-runners`](https://github.com/iainchesworthlabs/ci-runners) so the fleet and this repo
+   track the same toolchain), CMake's minimum from
    `CMakePresets.json`'s `cmakeMinimumRequired`, and vcpkg's baseline from `vcpkg.json`'s
    `builtin-baseline`.
    [`_toolchain-versions.yml`](https://github.com/iainchesworthlabs/ac3forge/blob/main/.github/workflows/_toolchain-versions.yml)

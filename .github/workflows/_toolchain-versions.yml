@@ -9,9 +9,10 @@
 # This does not duplicate a value that already has a canonical home elsewhere:
 # GCC/LLVM majors are read straight out of .github/toolchain/02-gcc-toolchain.sh
 # and 03-llvm-toolchain.sh (the scripts that actually install them, copied
-# verbatim from aqualink-automate so both projects pin the same toolchain),
-# CMake's minimum out of CMakePresets.json's cmakeMinimumRequired, and vcpkg's
-# baseline out of vcpkg.json's builtin-baseline. Only msvc_toolset and qt -
+# verbatim from iainchesworthlabs/ci-runners so the fleet and this repo pin
+# the same toolchain), CMake's minimum out of CMakePresets.json's
+# cmakeMinimumRequired, and vcpkg's baseline out of vcpkg.json's
+# builtin-baseline. Only msvc_toolset and qt -
 # which have no other file that already pins them - live directly in
 # .github/toolchain-versions.json. See that file's own header and
 # docs/ci-self-hosted-runners.md for the full design.
