@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
 #include <utility>
@@ -31,7 +32,10 @@ int main() {
     // Object metadata competes with the mantissas for the same frame, so an
     // object stream wants more headroom than a plain 5.1 one.
     ac3::oba::AtmosEncoder encoder{{.bitrate_kbps = 448}, kObjects};
-    ac3::Eac3Decoder decoder;
+    // Heap-allocated (PREfast's C6262, alert #77): Eac3Decoder's per-block
+    // scratch members pushed this one-shot stack declaration over the
+    // threshold - same pattern as atmos_fallback.cpp and PR #50.
+    auto decoder = std::make_unique<ac3::Eac3Decoder>();
 
     std::vector<std::vector<float>> sources(
         kObjects, std::vector<float>(ac3::kSamplesPerFrame));
@@ -96,7 +100,7 @@ int main() {
                        static_cast<int>(unit->substream_count()));
             return 1;
         }
-        const auto decoded = decoder.decode_substream(unit->substream(0));
+        const auto decoded = decoder->decode_substream(unit->substream(0));
         if (!decoded) {
             std::printf("decode failed: %d\n", std::to_underlying(decoded.error()));
             return 1;
