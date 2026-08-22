@@ -12,6 +12,15 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.9.0-beta.1] - 2026-08-22
+
+Ninth tagged release. The headline is the memory-usage optimization programme landing in full:
+per-frame codec allocation churn down 54–88%, every CLI command and GUI recording streaming
+instead of buffering, and a new memory trend that gates regressions the same way the timing
+series always has — alongside a default-on fast inverse transform (4.5–4.7× faster decodes), a
+whole-library per-component coverage gate, `ac3::signing` joining the installed/exported library
+surface, and continued `apps/cli` command-group extraction.
+
 ### Added
 
 - **Performance and reference transform modes.** The decoder's inverse transform joins the
@@ -49,6 +58,14 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   [docs/performance-trend.md](docs/performance-trend.md) with the same trailing-baseline gates
   (either churn metric regressing flags the row) plus an absolute leak check that applies
   regardless of the trailing baseline.
+- **`ac3::signing` is now an installed, exported library component** (repo-structure review D6),
+  restructured into the same OBJECT+STATIC+SHARED shape `ac3::forge` itself uses
+  (`ac3::signing_static`/`ac3::signing_shared`, `AC3SIGNING_EXPORT`-annotated) instead of a
+  single internal-only `STATIC` target with no `install()` at all. `signing_static`/
+  `signing_shared` each publicly link their own matching `forge_static`/`forge_shared`,
+  preserving today's `PUBLIC ac3::forge` propagation; a real standalone
+  `find_package(ac3forge CONFIG REQUIRED)` consumer linking `ac3::signing_static` now builds and
+  runs across the installed-package boundary.
 
 ### Fixed
 
@@ -95,6 +112,17 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   it's gone, as a deliberate scope decision pending a `capi` feature. Verified with a real
   `vcpkg install ac3forge --overlay-ports=packaging/vcpkg-port` that the port still installs no
   `ac3::forge_c` artifacts today.
+- **A stack-overflow-risk PREfast finding (alert #77) is fixed**: `examples/atmos_objects.cpp`
+  now heap-allocates its `Eac3Decoder` instead of stack-declaring it, the same fix already
+  applied to `atmos_fallback.cpp` and `station_broadcast.cpp` for the identical scratch-state
+  growth. Two duplicate false-positive `optional`-access findings (alerts #70/#71, in
+  `apps/gui/qc_controller.cpp`'s and `apps/cli/main.cpp`'s `measure_qc`/`measure_eac3`) are
+  documented and suppressed — a `have_first`/non-empty-stream guard already proves the meter
+  optional is engaged before use, matching a pattern already fixed once elsewhere in `main.cpp`.
+- **`misc-include-cleaner` findings that leaked back into `apps/cli/main.cpp` and
+  `commands/analysis.cpp`** after the CLI command-group extraction (both predate that move and
+  were never revisited for their own include lists) are fixed, keeping the `static-analysis` CI
+  leg green.
 
 ### Changed
 
@@ -183,6 +211,22 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   includes); all were fixed mechanically with `clang-tidy -fix` as part of this change and
   verified against a full rebuild plus a clean `ctest` run (615/615) before the check joined the
   enforced baseline. See `.clang-tidy`'s own header comment for the full rationale.
+
+### Known gaps
+
+- The macOS `ac3gui.app` is still not Apple-notarized or code-signed — unchanged from
+  0.8.0-beta.2; this release signs artifacts with GPG and attests provenance via Sigstore/OIDC,
+  neither of which satisfies Gatekeeper. Expect a "developer cannot be verified" prompt on first
+  launch.
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA, PipeWire or CoreAudio.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
 
 ## [0.8.0-beta.2] - 2026-08-19
 
