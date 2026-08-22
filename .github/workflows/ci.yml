@@ -270,7 +270,19 @@ jobs:
   # arguments, unlike clang-tidy itself): every finding present when this job
   # was added was either fixed or suppressed with a NOLINT and a one-line
   # justification (see the commit that added this job), so a clean baseline
-  # is the starting point, not an aspiration.
+  # is the starting point, not an aspiration. (.clang-tidy now carries
+  # WarningsAsErrors: '*' too, so a plain local `clang-tidy` run agrees with
+  # this job - the flag here stays as the explicit, self-describing form.)
+  #
+  # The DEBUG preset, deliberately: analysis builds are diagnostic builds
+  # and keep asserts on, same reasoning that exempts the sanitizer leg from
+  # performance gating. A Release configure defines NDEBUG, which
+  # preprocesses every assert() away before clang-tidy ever parses the TU -
+  # so the analyzer never learns the invariants asserts state, and every
+  # assert-adjacent finding needed a NOLINT crutch paired with the assert.
+  # clang-tidy's findings don't depend on optimization level, only on what
+  # the preprocessor kept, so the existing debug preset is the right
+  # configuration and no analysis-only preset is needed.
   static-analysis:
     name: Static Analysis (clang-tidy)
     needs: [changes, toolchain-versions]
@@ -300,16 +312,16 @@ jobs:
 
       - name: Configure
         shell: bash
-        run: cmake --preset config-linux-llvm
+        run: cmake --preset config-linux-llvm-debug
 
       - name: Build
         shell: bash
-        run: cmake --build --preset build-linux-llvm -- -k 0
+        run: cmake --build --preset build-linux-llvm-debug -- -k 0
 
       - name: clang-tidy
         shell: bash
         run: |
-          run-clang-tidy-21 -j "$(nproc)" -p build/config-linux-llvm \
+          run-clang-tidy-21 -j "$(nproc)" -p build/config-linux-llvm-debug \
             -warnings-as-errors='*' \
             '(src/(forge|matroska)|apps/cli)/.*\.cpp'
 
