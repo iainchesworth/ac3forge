@@ -151,10 +151,16 @@ Android is a real target (see [docs/platforms/android.md](platforms/android.md))
 architectures fail to build (`matroska`'s size comparisons assume a 64-bit `size_t`).
 
 `ac3::forge_c` (roadmap F1) is deliberately excluded via `-DAC3FORGE_BUILD_CAPI=OFF` rather than
-exposed as a feature: its `capiTargets` export currently requires `forge_static` even when
-`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` leaves that target unexported - a real bug independent of
-vcpkg, not something to route around by exporting it here too. Revisit adding a `capi` feature
-once that's fixed upstream.
+exposed as a feature. Its `capiTargets` export used to require `forge_static` even when
+`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` left that target unexported - a real bug independent of
+vcpkg, fixed in `cmake/InstallLibrary.cmake` by exporting `forge_static` alongside `forge_shared`
+in that branch whenever `AC3FORGE_BUILD_CAPI` is `ON` (#227). The port keeps
+`AC3FORGE_BUILD_CAPI=OFF` regardless: `ac3::forge_c` was never part of its documented scope, and
+with the export-set bug gone, revisiting that is now a scope decision rather than a bug
+workaround - add a same-named `capi` feature to `vcpkg.json` and `portfile.cmake`'s
+`vcpkg_check_features()` call (its `AC3FORGE_BUILD_CAPI` CMake option and
+`cmake/InstallLibrary.cmake` guard already exist) and document it in
+[docs/library/index.md](library/index.md), same as `matroska`/`mp4`/`mpegts` each did.
 
 Any future optional library component follows the same three-step recipe this repo's own
 `AC3FORGE_BUILD_<NAME>` options already establish: add the CMake option and its

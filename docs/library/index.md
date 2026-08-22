@@ -54,11 +54,12 @@ public APIs/targets/binaries, and each of these three is exactly that) — opt i
 `vcpkg install ac3forge[matroska,mp4,mpegts]` (all three) or `ac3forge[mp4]` (just `mp4`) to get
 `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` available. `ac3adm::ac3adm` has no vcpkg
 feature — see the note above, it isn't part of this installed package at all — and neither does
-`ac3::forge_c` (the C API, see [C API](c-api.md)): its export set currently has a real bug under
-`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` (the single-linkage mode this port always uses), so the
-port excludes it entirely rather than exposing something broken. Once merged into
-`microsoft/vcpkg`, the same two snippets work with a plain `vcpkg install ac3forge` — no
-`--overlay-ports` needed.
+`ac3::forge_c` (the C API, see [C API](c-api.md)) yet: its export set had a real bug under
+`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` (the single-linkage mode this port always uses), since fixed
+in `cmake/InstallLibrary.cmake` — but the port still passes `-DAC3FORGE_BUILD_CAPI=OFF`, since
+staying out of scope is now a deliberate choice pending a `capi` feature, not a bug workaround.
+Once merged into `microsoft/vcpkg`, the same two snippets work with a plain
+`vcpkg install ac3forge` — no `--overlay-ports` needed.
 
 **Conan.** A recipe lives in this repo at
 [`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)
