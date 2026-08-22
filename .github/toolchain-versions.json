@@ -1,0 +1,5 @@
+{
+  "_comment": "Single source of truth for the pinned CI tool versions that have no other canonical home in this repo. GCC/LLVM majors are NOT duplicated here - they live in .github/toolchain/02-gcc-toolchain.sh and 03-llvm-toolchain.sh (copied verbatim from aqualink-automate so both projects pin the same toolchain; changing that pin means editing the script, same as today). CMake's minimum lives in CMakePresets.json's cmakeMinimumRequired. vcpkg's baseline lives in vcpkg.json's builtin-baseline. .github/workflows/_toolchain-versions.yml reads all of the above plus this file and exposes one uniform set of outputs, so bumping a version is a one-file change (this one, the relevant toolchain script, CMakePresets.json, or vcpkg.json) instead of hunting down every workflow that hardcoded a copy. See docs/ci-self-hosted-runners.md.",
+  "msvc_toolset": "14.5",
+  "qt": "6.8.3"
+}

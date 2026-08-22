@@ -27,11 +27,17 @@
 #                                     _build.yml. Also runs the codec-matrix
 #                                     script's full layout/tool/atmos sweep
 #   static-analysis (tidy)  GREEN     .clang-tidy's curated set, clean baseline
-#   coverage                GREEN     81.3% line / 72.0% branch over src/lib
-#                                     (ac3::forge only) when last recorded
-#                                     here, gated at 80%/70% - see the job's
-#                                     own comment for why the gate sits below
-#                                     the measured number
+#   coverage                GREEN     per-component line/branch gates over all
+#                                     nine library components (src/forge 92.2%
+#                                     line / 84.1% branch on the 2026-08-20
+#                                     WSL2 calibration run - no hosted run of
+#                                     the per-component gate recorded here
+#                                     yet; src/audio measured genuinely thin,
+#                                     src/capi's own thin spot closed the same
+#                                     day when tests/capi/test_capi.cpp gained its
+#                                     E-AC-3 half) - the floors and the full
+#                                     measured table live in
+#                                     tools/checks/coverage_report.sh
 #   macos-llvm              GREEN     real GitHub Actions runs - this project
 #                                     has no Mac. Its first-ever run hit one
 #                                     genuine, fully-understood issue
@@ -50,10 +56,10 @@
 # The project's original validation-pyramid design (now docs/verification.md)
 # called for L3 (FFmpeg-oracle strict decode, every commit) and L4
 # (perceptual SNR) from the start; neither was ever wired into any CI leg
-# until now. scripts/verify-gold-reference.sh
+# until now. tools/checks/verify_gold_reference.sh
 # encodes a fixed checked-in 5.1 WAV (tests/golden/audio/reference_51.wav),
 # strict-decodes it with FFmpeg, decodes it with ac3cli's own decoder, and
-# asserts they agree via scripts/compare_wav.py's delay-compensated SNR (>=
+# asserts they agree via tools/checks/compare_wav.py's delay-compensated SNR (>=
 # 30 dB gate). Runs on every leg except linux-llvm-asan-ubsan (diagnostic-
 # only, same reasoning as its `packageable` exclusion). Real numbers from the
 # CI run that landed this: 67.84/67.82 dB on Windows and Linux, 61.81/61.82
@@ -62,21 +68,21 @@
 # threshold on every leg, and exactly why the gate is SNR-based rather than a
 # bit-exact bitstream comparison.
 #
-# Qt Quick Test harness: src/gui/tests/ adds ac3gui_qml_tests, a real ctest
+# Qt Quick Test harness: apps/gui/tests/ adds ac3gui_qml_tests, a real ctest
 # entry (label "gui") that Quick-Test-drives the actual EncoderController
 # singleton and Main.qml shell, registered only when AC3FORGE_BUILD_GUI is
 # ON - so it rides the existing GUI axis rather than adding a new one, and
 # the existing `ctest --preset test-<leg>` step picks it up with zero changes
 # to this file or _build.yml.
 #
-# ALSA-conditional tests (tests/platform/alsa/, see tests/CMakeLists.txt)
+# ALSA-conditional tests (tests/backend/alsa/, see tests/CMakeLists.txt)
 # register only when AC3FORGE_WITH_ALSA finds libasound, which is why a
 # no-ALSA fallback run reports fewer tests than the same leg's full run - a
 # configuration difference, not tests going missing.
 #
 # What none of this covers: real audio hardware. WSL2 has no sound devices and
 # no kernel sound modules, and neither does a GitHub runner, so the ALSA
-# backend is verified headless only. See docs/BUILDING.md#linux-audio.
+# backend is verified headless only. See docs/building.md#linux-audio.
 #
 # macos-llvm is no longer experimental (see _build.yml's own header for how
 # that happened) - it blocks like every other leg now, no continue-on-error.
@@ -162,6 +168,15 @@ jobs:
           fi
           echo "No quarantined signer in the tree."
 
+  # Single source of truth for the tool-version pins several jobs below need
+  # for their own direct setup-vcpkg call (build-and-test gets its copy from
+  # _build.yml's own internal job of the same name instead) - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   # Classify the change so a docs-only edit skips a five-platform matrix. This
   # is a job rather than a workflow-level paths-ignore on purpose: a filtered-out
   # workflow never runs, so the required "CI Status" check below would sit
@@ -184,7 +199,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements-docs\.(in|txt)$|\.github/workflows/docs\.yml$|.*\.md$)'
+          docs_re='^(docs/|LICENSE$|mkdocs\.yml$|requirements/requirements-docs\.(in|txt)$|\.github/workflows/docs\.yml$|.*\.md$)'
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             files=$(gh api --paginate "repos/$REPO/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')
@@ -226,7 +241,21 @@ jobs:
           persist-credentials: false
       - name: Check for preprocessor conditionals in src/
         shell: pwsh
-        run: ./scripts/check-platform-macros.ps1 -Root $PWD
+        run: ./tools/checks/check_platform_macros.ps1 -Root $PWD
+
+  # Internal consistency of packaging/ (vcpkg port, Homebrew, winget, Conan) - NOT "is it
+  # current", see the script's own header for why that's the wrong check. Same shape as
+  # platform-macros above: cheap, fast, ungated.
+  packaging-consistency:
+    name: Packaging Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check packaging manifests are internally consistent
+        shell: bash
+        run: bash tools/checks/check_packaging_versions.sh -r "$PWD"
 
   # .clang-tidy's own header comment explains the curated check groups and
   # what got excluded from them (and why). A full Build precedes clang-tidy,
@@ -244,7 +273,7 @@ jobs:
   # is the starting point, not an aspiration.
   static-analysis:
     name: Static Analysis (clang-tidy)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -267,7 +296,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         shell: bash
@@ -282,35 +311,47 @@ jobs:
         run: |
           run-clang-tidy-21 -j "$(nproc)" -p build/config-linux-llvm \
             -warnings-as-errors='*' \
-            'src/(lib|cli|matroska)/.*\.cpp'
+            '(src/(forge|matroska)|apps/cli)/.*\.cpp'
 
-  # ac3tests coverage over ac3::forge (src/lib only - the library is what was
-  # asked for; src/cli, src/gui and src/matroska are out of scope and unmeasured).
-  # config-linux-gcc-coverage (CMakePresets.json) builds just the library and
-  # its test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off there specifically so
-  # ac3cli and the seven example executables, which also link the now-instrumented
-  # ac3::forge, don't need ac3::coverage wired into them too just to resolve its
-  # gcov runtime symbols at link time (see cmake/Coverage.cmake).
+  # ac3tests coverage over every library component: src/forge plus audio,
+  # signing, matroska, mp4, mpegts, capi, and - via the coverage preset's
+  # AC3FORGE_BUILD_ADM=ON with vcpkg's 'adm' feature, the same pair
+  # adm-validate passes by hand - ac3adm/admbridge. Originally src/forge only
+  # ("the library is what was asked for"); extended once the rest of the
+  # library surface existed and was already being EXERCISED by this same
+  # suite, just uninstrumented and unreported. apps/cli and apps/gui stay out
+  # of scope: they are applications, not the library, and the coverage
+  # preset builds neither.
   #
-  # --fail-under-line 80 / --fail-under-branch 70 are deliberately NOT the
-  # 80/80 gate a sibling project (CountdownSolver) uses for the same setup:
-  # this job's own first real GitHub Actions run (gcc 15.2.0, matching the
-  # linux-gcc leg's pin) came back 81.3% line / 72.0% branch, measured while
-  # block switching, delta bit allocation, half sample rate and dual mono
-  # support were all still landing. Both thresholds sit a few points under
-  # that measured baseline on
-  # purpose, so ordinary in-flight churn does not immediately trip the gate,
-  # while a real coverage regression still fails the job. Raise both as the
-  # suite's own coverage grows rather than leaving the headroom in place
-  # indefinitely.
+  # config-linux-gcc-coverage (CMakePresets.json) builds just the library
+  # components and their test suite - AC3FORGE_BUILD_CLI/EXAMPLES are off
+  # there purely to save build time: ac3cli and the example executables
+  # would link fine against the instrumented libraries (the gcov runtime
+  # propagates to consumers automatically - see cmake/Coverage.cmake), but
+  # tools/checks/coverage_report.sh filters the report to the library components,
+  # so building them instrumented buys nothing.
   #
-  # A pre-merge WSL2 measurement on the same toolchain pin came back a couple
-  # of points higher on both axes (close, not identical - environment-
-  # specific gcov/header-instantiation differences are expected); the real
-  # hosted run above is the number this gate is actually calibrated against.
+  # The gate is PER COMPONENT - a line floor and a branch floor per
+  # src/<dir>, not one blended number a small component's regression could
+  # hide inside - and lives in tools/checks/coverage_report.sh alongside the
+  # measured baseline each floor was calibrated against. src/forge's original
+  # 80/70 floor (set a few points under its first hosted run's 81.3/72.0,
+  # measured 2026-08-09 while block switching, delta bit allocation, half
+  # sample rate and dual mono were still landing) is now 88/78: the suite
+  # grew well past the old numbers, and that first calibration's own
+  # instruction was to raise the floors as the suite grows rather than leave
+  # the headroom in place indefinitely.
+  #
+  # Calibration provenance: the current floors were set against a WSL2
+  # measurement on the same toolchain pins (gcc/gcov 15.2.0, gcovr 8.6).
+  # Same-machine comparisons have read a couple of points HIGHER than hosted
+  # runs (environment-specific gcov/header-instantiation differences), and
+  # the floors' margins already allow for that - re-check against this job's
+  # own first hosted run after any recalibration and tighten where the
+  # margin proves generous.
   coverage:
     name: Coverage (Linux, GCC)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -328,21 +369,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install GCC 15
+      - name: Install GCC 16
         run: bash .github/toolchain/02-gcc-toolchain.sh
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # ubuntu:26.04's python3-pip enforces PEP 668 (no bare `pip install` at
       # system scope) - --break-system-packages is safe here specifically
       # because this container is thrown away at the end of the job, unlike a
       # real machine where that flag risks the system's own Python tooling.
-      # requirements-coverage.txt is a pip-compile --generate-hashes lock (see
+      # requirements/requirements-coverage.txt is a pip-compile --generate-hashes lock (see
       # its own header for how to regenerate) so this install is hash-pinned.
       - name: Install gcovr
-        run: pip install --quiet --break-system-packages --require-hashes -r requirements-coverage.txt
+        run: pip install --quiet --break-system-packages --require-hashes -r requirements/requirements-coverage.txt
 
       - name: Configure
         shell: bash
@@ -356,48 +397,40 @@ jobs:
       # measurable overhead - a coverage build has no more business being
       # held to a hard real-time budget than the linux-llvm-asan-ubsan leg
       # does (same reasoning, see that matrix entry's own comment). This
-      # job's question is "how much of src/lib executes", not "how fast" -
-      # tests/performance/'s own suite covers the latter on a genuinely
-      # optimized build.
+      # job's question is "how much of the library executes", not "how
+      # fast" - tests/performance/'s own suite covers the latter on a
+      # genuinely optimized build.
       - name: Test
         shell: bash
         run: ctest --preset test-linux-gcc-coverage -LE Performance
 
-      # --gcov-ignore-parse-errors=suspicious_hits.warn: mdct.cpp's
-      # ForwardCosTable-driven hot loop (src/core/mdct.cpp) trips a documented
-      # gcov bug (gcc.gnu.org/bugzilla#68080, a false "suspicious hit value"
-      # on a tight accumulation loop) that otherwise aborts gcovr outright
-      # rather than just under/over-reporting that one line's count - gcovr's
-      # own error message names this exact flag as the fix. Warn, not skip,
-      # so a genuinely new suspicious-hit line elsewhere still shows up in
-      # the job log instead of vanishing silently.
+      # The gcov extraction, the per-component floors, and the gate itself
+      # all live in tools/checks/coverage_report.sh, shared verbatim with local
+      # runs (docs/building.md shows the local recipe) so CI and a developer
+      # machine cannot drift onto different filters or thresholds. The
+      # mdct.cpp suspicious-hits gcov-bug workaround this step used to carry
+      # inline moved there with the rest of the gcovr flags.
       - name: Coverage report + gate
         shell: bash
-        run: >
-          gcovr --root . --filter 'src/lib/.*'
-          --gcov-executable gcov-15
-          --exclude-throw-branches --exclude-unreachable-branches
-          --gcov-ignore-errors=no_working_dir_found
-          --gcov-ignore-parse-errors=suspicious_hits.warn
-          --object-directory build/config-linux-gcc-coverage
-          --print-summary --html-details build/coverage.html
-          --fail-under-line 80 --fail-under-branch 70
+        run: bash tools/checks/coverage_report.sh -g gcov-16
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
-          path: build/coverage*.html
+          path: build/config-linux-gcc-coverage/coverage*.html
 
   # ac3adm::ac3adm (src/ac3adm) is opt-in - AC3FORGE_BUILD_ADM defaults OFF, unlike every other
   # library component (see the root CMakeLists.txt's own option() and src/ac3adm/CMakeLists.txt's
   # header comment for why: it is the one module in this repo with a third-party dependency,
   # libadm's Boost header libraries, resolved only via -DVCPKG_MANIFEST_FEATURES=adm). No leg in
-  # build-and-test's matrix (_build.yml) or any other job in this file ever passes
-  # -DAC3FORGE_BUILD_ADM=ON, so without this job the module has zero CI coverage - a change to it,
-  # or to its vendored libbw64/libadm pins (src/ac3adm/CMakeLists.txt's GIT_TAG values), could
-  # silently break it and nobody would notice until someone happens to build with the flag on.
+  # build-and-test's matrix (_build.yml) ever passes -DAC3FORGE_BUILD_ADM=ON; besides this job,
+  # the only other build with it on is the coverage job's instrumented Debug preset, which turns
+  # the CLI and examples OFF - so without this job, roadmap B1 phase 3's CLI command and example
+  # (see below) would still have zero CI builds, and a change to the module or to its vendored
+  # libbw64/libadm pins (src/ac3adm/CMakeLists.txt's GIT_TAG values) would never be exercised at
+  # -O2 or under the full default configuration anybody actually installs.
   #
   # A dedicated job rather than an extra pass inside an existing Linux leg (the shape
   # alsa_fallback and BUILD_SHARED_LIBS already use in _build.yml): those legs are already the
@@ -410,26 +443,26 @@ jobs:
   #
   # One leg, not the whole matrix - same reasoning as ffmpeg-validate above: this module's own
   # code does not vary by platform/compiler (no #ifdefs anywhere in this repo - see
-  # scripts/check-platform-macros.ps1), so one Linux leg is enough to catch a real regression.
+  # tools/checks/check_platform_macros.ps1), so one Linux leg is enough to catch a real regression.
   # GCC 15, matching one of the two Linux toolchains this module was verified against locally
   # before landing (see the PR that introduced it, branch feature/adm-bw64-parser: Windows MSVC,
   # WSL2 gcc-15, WSL2 clang++-21, all green).
   #
   # AC3FORGE_BUILD_CLI/EXAMPLES stay at their preset default (ON): roadmap B1 phase 3 (the
-  # 'atmos-adm' ac3cli command, src/cli/main.cpp's run_atmos_adm, and examples/encode_adm.cpp) is
+  # 'atmos-adm' ac3cli command, apps/cli/main.cpp's run_atmos_adm, and examples/encode_adm.cpp) is
   # the first code outside tests/ to link ac3adm::ac3adm/ac3::admbridge at all, so unlike phases 1
   # and 2 (when neither the CLI nor the examples touched this module, hence this job originally
   # turning both off), this job now has to build and run both too or the CLI command and example
   # get zero CI coverage - the same gap this job's own header comment above already exists to close
   # for the library modules themselves. examples/ registers each example as its own ctest case
   # (examples/CMakeLists.txt), so `ctest --preset test-linux-gcc` below already exercises
-  # encode_adm's own standalone fixture-driven run alongside test_adm.cpp/test_adm_bridge.cpp/
+  # encode_adm's own standalone fixture-driven run alongside adm/test_adm.cpp/admbridge/test_adm_bridge.cpp/
   # test_cli_atmos_adm.cpp (tests/CMakeLists.txt only compiles that last one in when
   # AC3FORGE_BUILD_ADM AND ac3cli are both present, exactly the combination this job now builds).
   # AC3FORGE_BUILD_GUI already defaults OFF on this preset.
   adm-validate:
     name: ADM Module (Linux, GCC)
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -447,12 +480,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install GCC 15
+      - name: Install GCC 16
         run: bash .github/toolchain/02-gcc-toolchain.sh
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         shell: bash
@@ -516,7 +549,7 @@ jobs:
   # while ac3perf keeps passing. It records two granularities per run:
   # ac3bench's whole-frame ms/frame (gating at the +100% tier, below) and
   # ac3kernelbench's per-kernel ns/call (never gating - see
-  # scripts/append-kernel-history.py for why), so a whole-frame drift can be
+  # tools/ci/append_kernel_history.py for why), so a whole-frame drift can be
   # attributed to the kernel that caused it without re-running a profiler.
   #
   # One leg (linux-gcc), not the whole matrix: unlike the gold-reference SNR
@@ -528,13 +561,13 @@ jobs:
   # job instead of one more thing threaded through that file's per-leg logic.
   #
   # Reuses the quality-history branch (a different file - see
-  # scripts/append-performance-history.py) rather than a new branch, for the
+  # tools/ci/append_performance_history.py) rather than a new branch, for the
   # same reasons quality-trend already uses a dedicated branch instead of
   # gh-pages: incremental, no publish-cadence coupling, fetchable client-side
   # with no auth.
   persist-performance-trend:
     name: Publish performance trend
-    needs: build-and-test
+    needs: [build-and-test, toolchain-versions]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -558,18 +591,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install GCC 15
+      - name: Install GCC 16
         run: bash .github/toolchain/02-gcc-toolchain.sh
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Configure
         run: cmake --preset config-linux-gcc
 
-      - name: Build ac3bench and ac3kernelbench
-        run: cmake --build --preset build-linux-gcc --target ac3bench ac3kernelbench -- -k 0
+      - name: Build ac3bench, ac3kernelbench and ac3membench
+        run: cmake --build --preset build-linux-gcc --target ac3bench ac3kernelbench ac3membench -- -k 0
 
       - name: Run ac3bench
         run: |
@@ -578,14 +611,23 @@ jobs:
           build/config-linux-gcc/bin/ac3bench --json-out results/performance-linux-gcc/bench.json
 
       # A separate results tree from ac3bench's on purpose:
-      # append-performance-history.py globs every *.json under its legs and
+      # append_performance_history.py globs every *.json under its legs and
       # requires ac3bench's schema, so the two producers' outputs must never
-      # share a directory - see append-kernel-history.py's load_leg_results.
+      # share a directory - see append_kernel_history.py's load_leg_results.
       - name: Run ac3kernelbench
         run: |
           set -euo pipefail
           mkdir -p kernel-results/kernels-linux-gcc
           build/config-linux-gcc/bin/ac3kernelbench --json-out kernel-results/kernels-linux-gcc/kernels.json
+
+      # Third results tree, same reasoning as the kernel one above: each
+      # append script globs every *.json under its legs and requires its own
+      # producer's schema.
+      - name: Run ac3membench
+        run: |
+          set -euo pipefail
+          mkdir -p memory-results/memory-linux-gcc
+          build/config-linux-gcc/bin/ac3membench --json-out memory-results/memory-linux-gcc/membench.json
 
       # Same mechanic as quality-trend's own step in _build.yml (plain git
       # over an HTTPS remote carrying the token, not actions/checkout, which
@@ -623,7 +665,7 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory '*'
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-performance-history.py \
+          python3 tools/ci/append_performance_history.py \
             --results-dir results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -645,8 +687,30 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory '*'
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-kernel-history.py \
+          python3 tools/ci/append_kernel_history.py \
             --results-dir kernel-results \
+            --history-dir history \
+            --branch "$BRANCH" \
+            --commit "$COMMIT_SHA" \
+            --commit-date "$commit_date"
+
+      # Gates like the whole-frame series (its own hard_regression output,
+      # keyed off by its own fail step below), unlike the never-gating
+      # kernel series - ac3membench's counts are near-deterministic for a
+      # fixed workload, so its hard tier carries none of the runner-noise
+      # risk that keeps the kernel series advisory.
+      - name: Append memory-trend history
+        id: append_memory
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
+          python3 tools/ci/append_memory_history.py \
+            --results-dir memory-results \
             --history-dir history \
             --branch "$BRANCH" \
             --commit "$COMMIT_SHA" \
@@ -669,14 +733,24 @@ jobs:
           fi
 
       # Deliberately after the push above, not instead of the append step
-      # failing outright - see append-performance-history.py's own
-      # HARD_REGRESSION_SLOWDOWN_FRACTION and append-quality-history.py's
+      # failing outright - see append_performance_history.py's own
+      # HARD_REGRESSION_SLOWDOWN_FRACTION and append_quality_history.py's
       # identical reasoning for its own hard-regression step.
       - name: Fail on hard performance regression
         if: steps.append.outputs.hard_regression == 'true'
         shell: bash
         run: |
           echo "::error::A leg/config ran at least twice as slow as its trailing average - see the job log above and docs/performance-trend.md for the recorded numbers."
+          exit 1
+
+      # `always() &&` so a hard memory regression is still reported when the
+      # performance step above already failed the job - without it, a failed
+      # earlier step would silently skip this one.
+      - name: Fail on hard memory regression
+        if: always() && steps.append_memory.outputs.hard_regression == 'true'
+        shell: bash
+        run: |
+          echo "::error::A workload's heap churn at least doubled against its trailing average (or it leaked past the absolute threshold) - see the job log above and docs/performance-trend.md's memory tables for the recorded numbers."
           exit 1
 
   # FFmpeg as an independent oracle (CONTRIBUTING.md's "Oracles" list, #2),
@@ -691,26 +765,26 @@ jobs:
   # Annex E tool token and metadata option in the encoder's surface produces
   # a structurally valid stream at all - output *correctness* across the
   # full option space, which one fixed sample can never exercise:
-  #   - conformance: scripts/run-codec-matrix.sh's FFmpeg strict-decode
+  #   - conformance: tools/ci/run_codec_matrix.sh's FFmpeg strict-decode
   #     additions, across the layout/tool/metadata matrix. Skips 7.1.4 and
   #     7.1.4+Annex-E-tool combinations on purpose - see the script's own
   #     header comment and README.md's Verification gaps table for why no
   #     oracle exists for either.
-  #   - metadata: tools/check_drc.py (dynrng/compr/downmix/dialnorm) and
-  #     tools/check_coupling.py + check_coupling_level.py (coupling envelope
+  #   - metadata: tools/checks/check_drc.py (dynrng/compr/downmix/dialnorm) and
+  #     tools/checks/check_coupling.py + check_coupling_level.py (coupling envelope
   #     and absolute level), all discriminating checks that compare a decode
   #     which applies the metadata against one that doesn't.
-  #   - fidelity: tools/quality_race.py's `ci` mode, a numeric SNR/LSD floor
+  #   - fidelity: tools/ci/quality_race.py's `ci` mode, a numeric SNR/LSD floor
   #     per E-AC-3 tool variant (stereo and 5.1) plus AC-3, set well below
   #     today's measured numbers (README.md's own SNR table) so it trips on
   #     a genuine regression without chasing normal drift.
-  #   - coverage: tools/check_matrix_coverage.py, a different question from
+  #   - coverage: tools/checks/check_matrix_coverage.py, a different question from
   #     the three layers above - not "is the output correct" but "does
   #     anything exercise this at all". Reads the CLI's own canonical option
   #     lists (usage text, and the "unknown layout"/"unknown tool set" error
   #     messages a bad argument hits) and fails if a layout, Annex E tool
   #     token or command the CLI accepts today is never mentioned in
-  #     run-codec-matrix.sh - so a new option landing in the library without
+  #     run_codec_matrix.sh - so a new option landing in the library without
   #     a matching matrix entry fails CI instead of shipping unvalidated.
   #     Caught exactly this for real while this job was being built: E-AC-3
   #     VBR support landed with zero matrix coverage, on this same branch.
@@ -720,7 +794,7 @@ jobs:
   # to the vcpkg commit and the LLVM/GCC versions.
   ffmpeg-validate:
     name: FFmpeg Validate
-    needs: changes
+    needs: [changes, toolchain-versions]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -745,13 +819,13 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
-      # requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
+      # requirements/requirements-ffmpeg-validate.txt is a pip-compile --generate-hashes
       # lock (see its own header for how to regenerate) so this install is
       # hash-pinned.
       #
-      # Deliberately NOT installing `visqol-python` here (tools/quality_race.py's
+      # Deliberately NOT installing `visqol-python` here (tools/ci/quality_race.py's
       # perceptual_score(), see its own docstring for why ViSQOL/why that
       # package): this job's `ci` step is a hard fidelity gate and stays exactly
       # as fast and as free of new supply-chain surface as it was before that
@@ -759,7 +833,7 @@ jobs:
       # and one clear message, never a failure) already lets this job run
       # unchanged. The `trend` step below feeds the quality-history branch that
       # docs/landscape.md and docs/tool-comparison-trend.md read, so a real MOS
-      # column there needs `visqol-python` added to requirements-ffmpeg-
+      # column there needs `visqol-python` added to requirements/requirements-ffmpeg-
       # validate.in and this lock regenerated - a deliberate later step once
       # that dependency's own track record justifies pinning it into every CI
       # run, not a default of this PR.
@@ -774,7 +848,7 @@ jobs:
       # rather than trying to uninstall first - fine in a throwaway
       # container that gets discarded after the job either way.
       - name: Install numpy
-        run: pip install --quiet --break-system-packages --ignore-installed --require-hashes -r requirements-ffmpeg-validate.txt
+        run: pip install --quiet --break-system-packages --ignore-installed --require-hashes -r requirements/requirements-ffmpeg-validate.txt
 
       - name: Report ffmpeg version
         run: ffmpeg -version | head -1
@@ -786,31 +860,31 @@ jobs:
         run: cmake --build --preset build-linux-llvm --target ac3cli -- -k 0
 
       - name: Codec matrix against the FFmpeg oracle
-        run: bash scripts/run-codec-matrix.sh build/config-linux-llvm/bin/ac3cli
+        run: bash tools/ci/run_codec_matrix.sh build/config-linux-llvm/bin/ac3cli
 
       - name: Metadata checks against FFmpeg (dynrng, compr, downmix, dialnorm)
-        run: python3 tools/check_drc.py --cli build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/checks/check_drc.py --cli build/config-linux-llvm/bin/ac3cli
 
       - name: Coupling checks against FFmpeg (envelope and absolute level)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
         run: |
-          python3 tools/check_coupling.py
-          python3 tools/check_coupling_level.py
+          python3 tools/checks/check_coupling.py
+          python3 tools/checks/check_coupling_level.py
 
       - name: Fidelity gate against FFmpeg (SNR/LSD floors)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/quality_race.py ci
+        run: python3 tools/ci/quality_race.py ci
 
       - name: Matrix coverage (every CLI option is exercised somewhere)
-        run: python3 tools/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/checks/check_matrix_coverage.py --cli build/config-linux-llvm/bin/ac3cli
 
       # The generator half of this job's question. Everything above walks a
       # HAND-ENUMERATED set of command lines against one bootstrap tone: the
       # matrix says which options exist, the coverage check says each one is
       # named somewhere, and neither has any notion of option COMBINATIONS or
-      # of the input material. tools/fuzz_encoder_space.py draws random legal
+      # of the input material. tools/ci/fuzz_encoder_space.py draws random legal
       # configurations crossed with adversarial PCM whose character changes
       # part-way through a frame, and holds every resulting stream against
       # both decoders - see that file's own header for the encoder defect
@@ -837,12 +911,21 @@ jobs:
       - name: Encoder acceptance envelope (the rate floors the search draws from)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/fuzz_encoder_space.py --check-envelope
+        run: python3 tools/ci/fuzz_encoder_space.py --check-envelope
+
+      # Every case seed that ever produced a wrong verdict - from the encoder
+      # or from the harness itself - replayed exactly (REGRESSION_SEEDS in the
+      # script). Deterministic and seconds-cheap, so it gates like the
+      # envelope check does; the unseeded search below stays a search.
+      - name: Encoder input-space regressions (recorded past failures)
+        env:
+          AC3CLI: build/config-linux-llvm/bin/ac3cli
+        run: python3 tools/ci/fuzz_encoder_space.py --regressions
 
       - name: Encoder input-space fuzz (bounded, both decoders)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/fuzz_encoder_space.py --seconds 120
+        run: python3 tools/ci/fuzz_encoder_space.py --seconds 120
 
       - name: Upload failing encoder-space inputs
         if: failure()
@@ -853,7 +936,7 @@ jobs:
           if-no-files-found: ignore
 
       # Compute-only: scores this build against the same three fixed legs
-      # tools/gen_external_baseline.py measures FFmpeg/DEE against, using
+      # tools/generators/gen_external_baseline.py measures FFmpeg/DEE against, using
       # this project's own decoder throughout (see quality_race.py's
       # race_trend docstring) - neither FFmpeg's nor DEE's encoder ever
       # runs here. Not yet persisted to quality-history (a later phase);
@@ -872,7 +955,7 @@ jobs:
       - name: External-encoder landscape trend (compute-only)
         env:
           AC3CLI: build/config-linux-llvm/bin/ac3cli
-        run: python3 tools/quality_race.py trend --json-out results/trend.json --spectrogram-dir results/spectrograms
+        run: python3 tools/ci/quality_race.py trend --json-out results/trend.json --spectrogram-dir results/spectrograms
 
       - name: Upload landscape trend
         if: always()
@@ -893,7 +976,7 @@ jobs:
   # persist-performance-trend beside it - one job downstream of a single
   # producer job rather than a per-leg matrix, so this is one commit per CI
   # run, not a race between several. Needs neither a container nor a build:
-  # scripts/append-external-comparison-history.py is stdlib-only, and
+  # tools/ci/append_external_comparison_history.py is stdlib-only, and
   # tests/golden/external-baseline/manifest.json (the FFmpeg/DEE numbers to
   # diff against) is a committed file the checkout below already has.
   persist-external-comparison-trend:
@@ -965,7 +1048,7 @@ jobs:
         run: |
           set -euo pipefail
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-external-comparison-history.py \
+          python3 tools/ci/append_external_comparison_history.py \
             --trend-json results/trend.json \
             --manifest-json tests/golden/external-baseline/manifest.json \
             --history-dir history \
@@ -1009,7 +1092,7 @@ jobs:
 
       # Deliberately after the push above, not instead of the append step
       # failing outright - same reasoning as persist-performance-trend's and
-      # append-quality-history.py's identical hard-regression step.
+      # append_quality_history.py's identical hard-regression step.
       - name: Fail on hard external-comparison regression
         if: steps.append.outputs.hard_regression == 'true'
         shell: bash
@@ -1024,7 +1107,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [ branch-name, no-quarantine, changes, platform-macros, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
+    needs: [ branch-name, no-quarantine, changes, platform-macros, packaging-consistency, static-analysis, coverage, adm-validate, build-and-test, ffmpeg-validate, persist-performance-trend, persist-external-comparison-trend ]
     runs-on: ubuntu-latest
     steps:
       - name: Gate on required job results
@@ -1035,6 +1118,7 @@ jobs:
           R_QUARANTINE: ${{ needs.no-quarantine.result }}
           R_CHANGES: ${{ needs.changes.result }}
           R_MACROS: ${{ needs.platform-macros.result }}
+          R_PACKAGING: ${{ needs.packaging-consistency.result }}
           # 'skipped' on a docs-only change, which is a pass, not a failure.
           R_TIDY: ${{ needs.static-analysis.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
@@ -1050,6 +1134,7 @@ jobs:
           fail=0
           for pair in "branch-name:$R_BRANCH" "no-quarantine:$R_QUARANTINE" \
                       "changes:$R_CHANGES" "platform-macros:$R_MACROS" \
+                      "packaging-consistency:$R_PACKAGING" \
                       "static-analysis:$R_TIDY" "coverage:$R_COVERAGE" \
                       "adm-validate:$R_ADM" \
                       "build-and-test:$R_BUILD" "ffmpeg-validate:$R_FFMPEG" \

@@ -16,7 +16,7 @@
 # issue (Homebrew's unpinned LLVM formula flagging Catch2's __COUNTER__ usage
 # under -Wc2y-extensions - see cmake/CompilerWarnings.cmake), fixed in one
 # commit, followed by two consecutive clean runs including the gold-reference
-# gate (scripts/verify-gold-reference.sh) at real SNR numbers (60-80s dB) -
+# gate (tools/checks/verify_gold_reference.sh) at real SNR numbers (60-80s dB) -
 # not just "it compiled." See the table in ci.yml.
 #
 # Experimental legs run with continue-on-error, which reports their real
@@ -28,10 +28,6 @@ name: Reusable Build
 on:
   workflow_call:
     inputs:
-      vcpkg-commit:
-        description: "microsoft/vcpkg commit to pin (see .github/actions/setup-vcpkg)."
-        type: string
-        default: "eaca4a577b6b678c6e10252754b6988a61746c19"
       do_package:
         description: "Package every packageable matrix leg (best-effort), not just windows-msvc. Set by release.yml."
         type: boolean
@@ -176,9 +172,18 @@ jobs:
           echo "Linux: mode=$LINUX_MODE -> $linux_runner"
           echo "Windows: mode=$WINDOWS_MODE -> $windows_runner"
 
+  # Single source of truth for the tool-version pins the "Report and assert
+  # toolchain versions" step below (and the setup-vcpkg/install-qt-action
+  # steps) check the runner against - see docs/ci-self-hosted-runners.md and
+  # _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   build:
     name: ${{ matrix.name }}
-    needs: check-runners
+    needs: [check-runners, toolchain-versions]
     # Fork PRs never reach self-hosted (check-runners' own fork-PR branch
     # already forces hosted labels for them) - this is belt-and-braces so a
     # gap in that logic can't silently hand a fork PR a self-hosted runner.
@@ -187,7 +192,7 @@ jobs:
     # A backstop against GitHub's own 360-minute default: the macos-llvm
     # leg's first-ever GUI run hung in the Test step and silently consumed
     # the full 6 hours before being force-cancelled (see
-    # src/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
+    # apps/gui/tests/CMakeLists.txt's QSG_RENDER_LOOP comment for the
     # hypothesis and the per-test TIMEOUT that now also bounds that specific
     # case). This is deliberately generous - the slowest leg observed so far
     # (windows-llvm, packaging included on windows-msvc) is ~22 minutes - so
@@ -195,11 +200,12 @@ jobs:
     # a genuine hang anywhere in the job, known or not-yet-known.
     timeout-minutes: 90
 
-    # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
-    # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
-    # (24.04 at the time of writing) the LLVM script has to fall back to
-    # apt.llvm.org, whose noble repo is missing clang-tidy-21, lld-21 and
-    # libc++-21-dev, so the install fails before a single file is compiled.
+    # Ubuntu 26.04 for the Linux legs, where the distro archive carries
+    # gcc-16 (universe component - 02-gcc-toolchain.sh enables it) and LLVM 21
+    # outright. This is a pin, not a convenience: on ubuntu-latest (24.04 at
+    # the time of writing) the LLVM script has to fall back to apt.llvm.org,
+    # whose noble repo is missing clang-tidy-21, lld-21 and libc++-21-dev, so
+    # the install fails before a single file is compiled.
     # Pinning the container also stops a runner-image bump silently changing
     # the compiler under the matrix. Empty for the Windows/macOS legs, which
     # run directly on the host runner.
@@ -321,7 +327,7 @@ jobs:
           # reason as Linux, not because ac3gui cannot be built on macOS -
           # cmake/FindQt6.cmake already carries Homebrew's Qt6 prefixes
           # (/opt/homebrew/opt/qt, /opt/homebrew/opt/qt6) and
-          # src/gui/CMakeLists.txt's APPLE branch (MACOSX_BUNDLE,
+          # apps/gui/CMakeLists.txt's APPLE branch (MACOSX_BUNDLE,
           # qt_generate_deploy_qml_app_script under `if(WIN32 OR APPLE)`) was
           # already written for this, just never exercised. "Install Qt6
           # (macOS GUI)" below installs Homebrew's "qt" formula, which bundles
@@ -346,9 +352,9 @@ jobs:
       #
       # libasound2-dev is the ALSA backend's only dependency, and the reason it
       # is here rather than left out is that its ABSENCE is not a build
-      # failure: src/audio/CMakeLists.txt would fall back to the no-backend
-      # platform directory and CI would go green having compiled none of
-      # src/audio/src/platform/alsa/. The alsa_fallback step at the end covers
+      # failure: src/audio/CMakeLists.txt would fall back to the no-op
+      # posix/ directory and CI would go green having compiled none of
+      # src/audio/src/backend/alsa/. The alsa_fallback step at the end covers
       # the other half of that switch on purpose.
       - name: Bootstrap container
         if: matrix.container
@@ -400,7 +406,7 @@ jobs:
       # asserts its own resulting version and exits non-zero on drift.
       # `sudo` is absent in the container (already root) and required on the
       # host runners, hence the probe rather than a hardcoded prefix.
-      - name: Install GCC 15
+      - name: Install GCC 16
         if: matrix.gcc
         run: |
           set -eu
@@ -456,11 +462,11 @@ jobs:
           echo "${llvm_prefix}/bin" >> "$GITHUB_PATH"
 
       # ffmpeg is the gold-reference gate's decode oracle (see
-      # scripts/verify-gold-reference.sh). Proven first on macOS alone (the
+      # tools/checks/verify_gold_reference.sh). Proven first on macOS alone (the
       # newest, least-trusted leg); gold_reference now covers every packaged
       # leg except linux-llvm-asan-ubsan, which stays a diagnostic-only build
       # (see that matrix entry's own comment) but still needs it: the codec
-      # matrix step below (matrix.sanitizer) runs scripts/run-codec-matrix.sh,
+      # matrix step below (matrix.sanitizer) runs tools/ci/run_codec_matrix.sh,
       # which also uses ffmpeg as its independent oracle regardless of the
       # gold-reference gate being skipped on this leg.
       - name: Install ffmpeg (Linux)
@@ -500,7 +506,7 @@ jobs:
       # without this. clang-cl (windows-llvm) targets the MSVC ABI, so it
       # shares this same msvc2022_64 kit with windows-msvc rather than
       # needing its own. Version pinned to the exact kit already verified
-      # locally (see docs/BUILDING.md's Verified configuration table); the
+      # locally (see docs/building.md's Verified configuration table); the
       # pinned action itself is CountdownSolver's own precedent
       # (R:\CountdownSolver\.github\workflows\release.yml), the other
       # project sharing this same "prebuilt Qt, never vcpkg" convention.
@@ -508,38 +514,47 @@ jobs:
         if: runner.os == 'Windows'
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
-          version: "6.8.3"
+          version: ${{ needs.toolchain-versions.outputs.qt_version }}
           cache: true
 
-      # CMakePresets.json is version 6 and the project needs >= 3.28. Every
-      # current runner image is well past that; assert rather than discover it
-      # through a confusing "unknown preset field" error.
+      # CMakePresets.json declares the project's real minimum (cmakeMinimumRequired);
+      # this asserts the RUNNER actually meets it rather than letting a stale image
+      # fail later with a confusing "unknown preset field" error. gcc/llvm/msvc are
+      # asserted the same way, all against the pins toolchain-versions resolved
+      # above - see docs/ci-self-hosted-runners.md.
       - name: Report and assert toolchain versions
         shell: bash
+        env:
+          GCC_VERSION: ${{ needs.toolchain-versions.outputs.gcc_version }}
+          LLVM_VERSION: ${{ needs.toolchain-versions.outputs.llvm_version }}
+          MSVC_TOOLSET: ${{ needs.toolchain-versions.outputs.msvc_toolset }}
+          CMAKE_MIN: ${{ needs.toolchain-versions.outputs.cmake_min }}
         run: |
           set -euo pipefail
           cmake --version
           ninja --version
           # Let CMake do its own version comparison rather than parsing it in sh.
-          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<'EOF'
-          if(CMAKE_VERSION VERSION_LESS 3.28)
-            message(FATAL_ERROR "CMake ${CMAKE_VERSION} is too old; ac3forge needs >= 3.28")
+          # Unquoted heredoc so $CMAKE_MIN expands - \$CMAKE_VERSION stays escaped
+          # so it's still CMake's own variable, not a (unset) shell one.
+          cat > "${RUNNER_TEMP}/assert-cmake-version.cmake" <<EOF
+          if(CMAKE_VERSION VERSION_LESS ${CMAKE_MIN})
+            message(FATAL_ERROR "CMake \${CMAKE_VERSION} is too old; ac3forge needs >= ${CMAKE_MIN}")
           endif()
           EOF
           cmake -P "${RUNNER_TEMP}/assert-cmake-version.cmake"
           case "${{ matrix.preset }}" in
             linux-gcc|linux-gcc-arm64)
                           g++ --version | head -1
-                          g++ --version | head -1 | grep -q ' 15\.' || { echo "::error::expected g++ 15"; exit 1; } ;;
+                          g++ --version | head -1 | grep -q " ${GCC_VERSION}\." || { echo "::error::expected g++ ${GCC_VERSION}"; exit 1; } ;;
             linux-llvm|linux-llvm-arm64|linux-llvm-asan-ubsan)
                           clang++ --version | head -1
-                          clang++ --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang 21"; exit 1; } ;;
+                          clang++ --version | head -1 | grep -qE "version ${LLVM_VERSION}\." || { echo "::error::expected clang ${LLVM_VERSION}"; exit 1; } ;;
             windows-llvm) clang-cl --version | head -1
-                          clang-cl --version | head -1 | grep -qE 'version 21\.' || { echo "::error::expected clang-cl 21"; exit 1; } ;;
+                          clang-cl --version | head -1 | grep -qE "version ${LLVM_VERSION}\." || { echo "::error::expected clang-cl ${LLVM_VERSION}"; exit 1; } ;;
             windows-msvc) echo "MSVC toolset: ${VCToolsVersion:-unknown}"
                           case "${VCToolsVersion:-}" in
-                            14.5*) ;;
-                            *) echo "::error::expected an MSVC 14.5x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
+                            ${MSVC_TOOLSET}*) ;;
+                            *) echo "::error::expected an MSVC ${MSVC_TOOLSET}x toolset, got '${VCToolsVersion:-unset}'"; exit 1 ;;
                           esac ;;
             # No hard version assert here unlike the other LLVM legs: Homebrew's
             # llvm formula has no versioned pin to check against (see the
@@ -550,7 +565,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: ${{ inputs.vcpkg-commit }}
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       # ---------------------------------------------------------------------
       # Configure / build / test
@@ -619,7 +634,7 @@ jobs:
       # The gold-reference correctness gate (the L3 FFmpeg-oracle + a
       # lightweight L4 SNR check from the project's original validation-
       # pyramid design, now docs/verification.md - wired into CI for the
-      # first time here; see scripts/verify-gold-reference.sh's own header).
+      # first time here; see tools/checks/verify_gold_reference.sh's own header).
       # Proven on
       # macOS alone first; now every leg has it except linux-llvm-asan-ubsan,
       # which stays diagnostic-only (same reasoning as its `packageable`
@@ -629,7 +644,7 @@ jobs:
         if: matrix.gold_reference
         shell: bash
         env:
-          # See scripts/verify-gold-reference.sh's own comment: set, this asks
+          # See tools/checks/verify_gold_reference.sh's own comment: set, this asks
           # compare_wav.py to also write a structured per-codec result here,
           # which the "Upload gold-reference results" step below picks up.
           # Unset (persist_quality_trend false, e.g. every PR run) the gate
@@ -642,7 +657,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             bin="${bin}.exe"
           fi
-          bash scripts/verify-gold-reference.sh "$bin"
+          bash tools/checks/verify_gold_reference.sh "$bin"
 
       # Handed off to the quality-trend job below, which runs once (not once
       # per leg) after every gold_reference leg has passed - see that job's
@@ -660,7 +675,7 @@ jobs:
       # can't - that ac3gui actually starts, loads its QML, and drives a real
       # encode through the Qt event loop. offscreen needs no display, so it
       # runs the same in this container as it does on a workstation. See
-      # docs/BUILDING.md's Linux section for why the qmlshapesplugin /
+      # docs/building.md's Linux section for why the qmlshapesplugin /
       # labsmodelsplugin / qmlfolderlistmodelplugin CMake warnings during
       # Configure, above, don't affect this.
       - name: Smoke test ac3gui (headless)
@@ -668,7 +683,7 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        # src/gui/CMakeLists.txt sets MACOSX_BUNDLE ON unconditionally, but it
+        # apps/gui/CMakeLists.txt sets MACOSX_BUNDLE ON unconditionally, but it
         # is a no-op everywhere except APPLE, where it moves the built
         # executable to bin/ac3gui.app/Contents/MacOS/ac3gui instead of plain
         # bin/ac3gui - the property Linux never sets and Windows doesn't need
@@ -677,7 +692,7 @@ jobs:
         #
         # QSG_RENDER_LOOP=basic and the perl-alarm wrapper are both macOS-only
         # and both about the same hang the "Test" step hit on this leg's
-        # first-ever GUI run (see src/gui/tests/CMakeLists.txt's identical
+        # first-ever GUI run (see apps/gui/tests/CMakeLists.txt's identical
         # QSG_RENDER_LOOP comment for the render-loop-deadlock hypothesis).
         # ac3gui --smoke drives the same QQmlApplicationEngine/QQuickWindow
         # path ac3gui_qmltests does, so it is at equal risk and had no bound
@@ -714,11 +729,11 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1
           UBSAN_OPTIONS: print_stacktrace=1
-        run: bash scripts/run-codec-matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
+        run: bash tools/ci/run_codec_matrix.sh "build/config-${{ matrix.preset }}/bin/ac3cli"
 
       # The other side of the ALSA switch: a Linux machine without libasound's
       # development headers must still configure, build and pass everything,
-      # falling back to src/audio/src/platform/posix/ - that is the whole point
+      # falling back to src/audio/src/backend/posix/ - that is the whole point
       # of the dependency being optional, and it is a claim that rots silently
       # unless something checks it.
       #
@@ -746,7 +761,7 @@ jobs:
       # release: ac3::forge_shared/matroska::matroska_shared existing and
       # configuring cleanly (already exercised by every leg's normal
       # config-<preset> build, since both variants are always built
-      # regardless of BUILD_SHARED_LIBS - see src/lib/CMakeLists.txt) is not
+      # regardless of BUILD_SHARED_LIBS - see src/forge/CMakeLists.txt) is not
       # the same claim as every in-tree consumer actually linking and
       # running against the real .so - ac3cli/ac3tests/every example,
       # including mux_mkv, the one that needs libmatroska.so alongside
@@ -841,7 +856,7 @@ jobs:
             packages/*.dmg.sha512
           if-no-files-found: error
 
-  # The Shield app (platform/android): a Gradle/NDK build, not a CMake preset
+  # The Shield app (apps/android): a Gradle/NDK build, not a CMake preset
   # leg, so it is its own job rather than a `build` matrix entry - there is
   # no config-android/build-android/pack-android preset to reuse, and trying
   # to force this into the same matrix shape as the CMake legs above would
@@ -893,7 +908,7 @@ jobs:
           persist-credentials: false
           fetch-depth: ${{ inputs.fetch_depth }}
 
-      # platform/android/gradle/wrapper/gradle-wrapper.jar is a committed
+      # apps/android/gradle/wrapper/gradle-wrapper.jar is a committed
       # binary (OpenSSF Scorecard's Binary-Artifacts check, alert #65) - it
       # can't be dropped since gradlew needs it, so this verifies its
       # checksum against Gradle's own known-good release hashes instead.
@@ -941,13 +956,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          asset_dir="platform/android/app/src/main/assets"
+          asset_dir="apps/android/app/src/main/assets"
           mkdir -p "$asset_dir"
           printf '%s' "$ATMOS_SIGNING_KEY" > "$asset_dir/signing.key"
           echo "Wrote $asset_dir/signing.key ($(wc -c < "$asset_dir/signing.key") base64 chars) - object signing enabled."
 
       - name: Build debug APK
-        working-directory: platform/android
+        working-directory: apps/android
         shell: bash
         run: |
           set -euo pipefail
@@ -988,7 +1003,7 @@ jobs:
 
       - name: Build release APK
         if: inputs.do_package
-        working-directory: platform/android
+        working-directory: apps/android
         shell: bash
         run: |
           set -euo pipefail
@@ -1007,7 +1022,7 @@ jobs:
           set -euo pipefail
           version="${VERSION_TAG_INPUT:-0.0.0-dev}"
           mkdir -p packages
-          cp platform/android/app/build/outputs/apk/release/app-release.apk \
+          cp apps/android/app/build/outputs/apk/release/app-release.apk \
              "packages/ac3forge-shield-${version}.apk"
           ( cd packages && sha512sum "ac3forge-shield-${version}.apk" > "ac3forge-shield-${version}.apk.sha512" )
 
@@ -1021,7 +1036,7 @@ jobs:
             packages/*.apk.sha512
           if-no-files-found: error
 
-  # The WASM browser decode demo (platform/wasm, roadmap F3): a real CMake
+  # The WASM browser decode demo (apps/wasm, roadmap F3): a real CMake
   # preset (config-wasm-emscripten) unlike build-android above, but still its
   # own job rather than a `build` matrix entry, for the same reason
   # build-android's own header gives - this leg has none of the shape that
@@ -1094,7 +1109,7 @@ jobs:
       contents: write
     steps:
       # persist-credentials: false - this checkout is only ever read from
-      # (scripts/append-quality-history.py, `git show` on this commit); the
+      # (tools/ci/append_quality_history.py, `git show` on this commit); the
       # "Prepare quality-history checkout" step below pushes through its own
       # explicitly-scoped remote instead, so leaving actions/checkout's token
       # persisted in this working tree's git config would just be an unused,
@@ -1151,10 +1166,10 @@ jobs:
         run: |
           set -euo pipefail
           # The commit's own recorded date, not date -u/Date.now() - see
-          # append-quality-history.py's own header on why this is passed in
+          # append_quality_history.py's own header on why this is passed in
           # rather than read from the clock.
           commit_date="$(git show -s --format=%cI "$COMMIT_SHA")"
-          python3 scripts/append-quality-history.py \
+          python3 tools/ci/append_quality_history.py \
             --results-dir results \
             --history-dir history \
             --branch "$BRANCH" \
@@ -1181,7 +1196,7 @@ jobs:
       # failing outright: a hard regression's numbers still need to land in
       # quality-history (docs/quality-trend.md's table/chart is how anyone
       # finds out what happened) even though this run must also end up red.
-      # See scripts/append-quality-history.py's HARD_REGRESSION_DROP_DB.
+      # See tools/ci/append_quality_history.py's HARD_REGRESSION_DROP_DB.
       - name: Fail on hard quality regression
         if: steps.append.outputs.hard_regression == 'true'
         shell: bash

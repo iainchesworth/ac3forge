@@ -2,7 +2,7 @@
 # Linux GCC Toolchain Configuration
 #
 # Chainloaded by the config-linux-gcc* presets via
-# VCPKG_CHAINLOAD_TOOLCHAIN_FILE. GCC 15 is the pinned version; the older names
+# VCPKG_CHAINLOAD_TOOLCHAIN_FILE. GCC 16 is the pinned version; the older names
 # are a fallback so a developer box one release behind still configures.
 #------------------------------------------------------------------------------
 
@@ -39,12 +39,12 @@ set(_GCC_BIN_HINTS
     "$ENV{GCC_ROOT}/bin")
 
 find_program(CMAKE_C_COMPILER
-    NAMES gcc-15 gcc gcc-14 gcc-13
+    NAMES gcc-16 gcc gcc-15 gcc-14 gcc-13
     HINTS ${_GCC_BIN_HINTS}
     REQUIRED)
 
 find_program(CMAKE_CXX_COMPILER
-    NAMES g++-15 g++ g++-14 g++-13
+    NAMES g++-16 g++ g++-15 g++-14 g++-13
     HINTS ${_GCC_BIN_HINTS}
     REQUIRED)
 

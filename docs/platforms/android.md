@@ -1,7 +1,7 @@
 # Android (NVIDIA Shield)
 
 Android support is not `ac3cli`/`ac3gui` ported to a phone — it is a separate, small,
-Shield-specific demo app, **Shield Atmos Demo** (`platform/android/`), that plays a real Atmos/JOC
+Shield-specific demo app, **Shield Atmos Demo** (`apps/android/`), that plays a real Atmos/JOC
 stream out through the Shield's HDMI passthrough output to an AV receiver, with a controller or
 remote moving one of a few objects around the room live. It exists to prove the encoder's object
 audio audibly moves in 3D space on real consumer hardware, not to be a general-purpose encoding
@@ -20,7 +20,7 @@ An Android SDK with **NDK 26.1.10909125** and **CMake 3.31.6** installed (`local
 `sdk.dir`), plus a Shield TV reachable over the network or USB:
 
 ```bash
-cd platform/android
+cd apps/android
 ./gradlew assembleDebug --no-daemon
 adb connect <shield-ip>:5555          # if not on USB
 adb -s <shield-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
@@ -31,18 +31,18 @@ adb -s <shield-ip>:5555 shell am start -n com.ac3forge.shield/.MainActivity
 
 ## What's reused, what's new
 
-`ac3::forge` (`src/lib/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
+`ac3::forge` (`src/forge/`) — the codec, `AtmosEncoder`, IEC 61937 framing — is fully
 platform-independent and is linked into the app **unmodified**, via a thin wrapper
-`CMakeLists.txt` (`platform/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
+`CMakeLists.txt` (`apps/android/app/src/main/cpp/CMakeLists.txt`) that `add_subdirectory()`s
 the real repo root rather than duplicating its target definitions. `ac3::audio` (`src/audio/`)
-gains a fifth platform backend, `src/audio/src/platform/android/`, alongside `windows`/`alsa`/
+gains a fifth backend, `src/audio/src/backend/android/`, alongside `windows`/`alsa`/
 `posix`/`macos`, selected by CMake's own `ANDROID` variable (set by the NDK toolchain file, a peer check
 to the existing `WIN32`/`LINUX`/`APPLE` blocks in `src/audio/CMakeLists.txt`) — no `#ifdef`
 anywhere, per the project's
 [platform-tree convention](raspberry-pi.md#why-theres-no-raspberry-pi-specific-code).
 
 Everything else — the Gradle app shell, the JNI bridge, the live encode loop, input handling, the
-room visualization — is new and lives entirely under `platform/android/`, outside the CMake
+room visualization — is new and lives entirely under `apps/android/`, outside the CMake
 project the desktop tools build from.
 
 ## Toolchain
@@ -56,7 +56,7 @@ linked into one shared object (`ac3forge_jni.so`), and a static STL would duplic
 (locale, iostream init) if anything else in the process ever pulled in libc++ too.
 
 The r26 pin also reaches into the library itself: r26's bundled libc++ does not implement
-`<format>`, so shared library code avoids it outright — `src/lib/src/version.cpp` builds its
+`<format>`, so shared library code avoids it outright — `src/forge/src/version.cpp` builds its
 version string by plain concatenation and cites this page for why.
 
 `minSdk = 26` (Oreo) is a hard floor, not a target: `monitor.cpp` depends on AAudio outright, which
@@ -88,7 +88,7 @@ So the backend is genuinely split, unlike the other three:
 
 - **`monitor.cpp`** — real AAudio (`AAudioStreamBuilder`, PCM float), for local preview. This is
   exactly what AAudio is good at, and the only place in this backend that uses it.
-- **`passthrough.cpp`** — a JNI shim implementing `ac3::sinks::PassthroughSink`. `submit()` hands
+- **`passthrough.cpp`** — a JNI shim implementing `ac3::audio::PassthroughSink`. `submit()` hands
   each burst to a Kotlin-owned `AudioTrack` via a small round-robin pool of buffers wrapped once
   with `env->NewDirectByteBuffer(...)` and promoted to a `GlobalRef` at startup — one `memcpy` into
   a native buffer per burst, zero further copies, no per-frame `NewDirectByteBuffer`/GC churn.
@@ -119,7 +119,7 @@ That override alone only bought back ~1.6x — nowhere near enough. Profiling wi
 `AC3FORGE_ENABLE_TRACY`) traced the remaining gap to `mdct_forward_core`: it recomputed `std::cos()`
 fresh, every iteration, inside an O(N²) loop, while the *inverse* transform right next to it already
 used a precomputed table. Fixing the forward transform to do the same (`ForwardCosTable` in
-`src/lib/src/core/mdct.cpp`) gave a further ~3.8x — this is a real library-level fix, verified
+`src/forge/src/core/mdct.cpp`) gave a further ~3.8x — this is a real library-level fix, verified
 bit-exact against the full test suite, not an Android-specific workaround, and it benefits every
 platform's Atmos encode path. With both fixes, the Shield holds an exact 32.0ms/frame cadence with
 zero underruns. See [Performance trend](../performance-trend.md) for the CI regression gate this
@@ -347,7 +347,7 @@ To build a signed APK on your own machine, drop your own `signing.key` (base64 o
 ## Building and running
 
 ```bash
-cd platform/android
+cd apps/android
 ./gradlew assembleDebug --no-daemon
 adb connect <shield-ip>:5555          # if not on USB
 adb -s <shield-ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
@@ -434,7 +434,7 @@ every other required leg.
     green three consecutive times on GitHub's hosted runners — see [Release / CI](#release-ci) above.
 
 !!! warning "Not yet verified"
-    `tests/platform/android/` covers only the device-free logic (burst sizing, carrier rate,
+    `tests/backend/android/` covers only the device-free logic (burst sizing, carrier rate,
     render-device construction), built and run on the normal desktop-hosted CTest suite — there is
     no automated on-device or instrumented test for anything in this section; every claim above is
     manual verification on one specific Shield + receiver pair, not a repeatable check. Other Android

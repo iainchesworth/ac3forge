@@ -15,7 +15,7 @@ find_package(pybind11 CONFIG REQUIRED)
 pybind11_add_module(_ac3forge src/ac3forge_ext/bindings.cpp)
 
 # Deliberately not ac3::warnings, unlike every other in-tree consumer of
-# ac3::forge (examples/, tests/, src/cli, src/gui) - that target makes this
+# ac3::forge (examples/, tests/, apps/cli, apps/gui) - that target makes this
 # project's OWN warnings fatal, and pybind11's vendored headers are not this
 # project's code to hold to that bar. A real external consumer wrapping
 # ac3::forge would not inherit ac3::warnings either; this target is exactly

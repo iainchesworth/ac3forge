@@ -41,7 +41,7 @@
 #                      short per-PR counterpart is a step in that same
 #                      ffmpeg-validate job, not a job here, because everything
 #                      it needs is already built and pinned there.
-#                      See tools/fuzz_encoder_space.py for why this exists:
+#                      See tools/ci/fuzz_encoder_space.py for why this exists:
 #                      an encoder defect (PR #186) that produced streams BOTH
 #                      decoders reject, and that every other gate in this repo
 #                      missed because reaching it needs a specific input SHAPE
@@ -100,6 +100,13 @@ permissions:
   contents: read
 
 jobs:
+  # Single source of truth for encoder-space-nightly's vcpkg pin below - see
+  # docs/ci-self-hosted-runners.md and _toolchain-versions.yml's own header.
+  toolchain-versions:
+    uses: ./.github/workflows/_toolchain-versions.yml
+    permissions:
+      contents: read
+
   fuzz-regress:
     name: Fuzz Regress (seeds + regression corpus, no mutation)
     runs-on: ubuntu-latest
@@ -286,6 +293,7 @@ jobs:
   # under the gate it backs is not an oracle.
   encoder-space-nightly:
     name: Encoder Space Nightly (random legal configs x adversarial audio)
+    needs: toolchain-versions
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container: ubuntu:26.04
@@ -313,7 +321,7 @@ jobs:
 
       - uses: ./.github/actions/setup-vcpkg
         with:
-          vcpkg-commit: "eaca4a577b6b678c6e10252754b6988a61746c19"
+          vcpkg-commit: ${{ needs.toolchain-versions.outputs.vcpkg_commit }}
 
       - name: Report ffmpeg version
         run: ffmpeg -version | head -1
@@ -327,10 +335,10 @@ jobs:
       # First, because a run that draws configurations the encoder was never
       # going to accept would come back green having encoded almost nothing.
       - name: Acceptance envelope (the rate floors the generator draws from)
-        run: python3 tools/fuzz_encoder_space.py --check-envelope
+        run: python3 tools/ci/fuzz_encoder_space.py --check-envelope
 
       - name: Encoder input-space fuzz (deeper budget, both decoders)
-        run: python3 tools/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
+        run: python3 tools/ci/fuzz_encoder_space.py --seconds "$ENCODER_SPACE_SECONDS"
 
       - name: Upload failing inputs
         if: failure()

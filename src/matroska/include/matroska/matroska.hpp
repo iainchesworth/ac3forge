@@ -61,7 +61,15 @@ struct MuxOptions {
 };
 
 // Mux frames into a complete .mkv, returned as bytes. No file I/O here, so
-// this stays testable without touching a disk.
+// this stays testable without touching a disk. Frames arrive as views, so
+// io::scan's access units pass straight through - the owned copies the old
+// vector-list parameter forced on every slicing caller are gone.
+[[nodiscard]] MATROSKA_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options = {});
+
+// Owned-frame-list convenience, forwarding as views - for a caller that
+// built its frames (an encode loop) rather than sliced them from a stream.
 [[nodiscard]] MATROSKA_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const MuxOptions& options = {});

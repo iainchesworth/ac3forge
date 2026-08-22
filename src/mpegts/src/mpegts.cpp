@@ -389,9 +389,9 @@ std::string_view describe(MuxError error) {
     return "unknown error";
 }
 
-std::expected<std::vector<std::byte>, MuxError> mux(const AudioTrack& track,
-                                                     std::span<const std::vector<std::byte>> frames,
-                                                     const MuxOptions& options) {
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options) {
     if (frames.empty()) {
         return std::unexpected(MuxError::kNoFrames);
     }
@@ -442,5 +442,63 @@ std::expected<std::vector<std::byte>, MuxError> mux(const AudioTrack& track,
 
     return out;
 }
+
+std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
+    const MuxOptions& options) {
+    const std::vector<std::span<const std::byte>> views(frames.begin(), frames.end());
+    return mux(track, views, options);
+}
+
+std::expected<Writer, MuxError> Writer::create(const AudioTrack& track,
+                                               const MuxOptions& options) {
+    // The same refusals as mux(), minus kNoFrames - an incremental writer
+    // cannot know yet whether frames will arrive.
+    if (track.channels <= 0 || track.sample_rate == 0 || track.samples_per_frame == 0) {
+        return std::unexpected(MuxError::kInvalidTrack);
+    }
+    if (options.pmt_pid == options.audio_pid || options.pmt_pid == kPatPid ||
+        options.audio_pid == kPatPid) {
+        return std::unexpected(MuxError::kInvalidOptions);
+    }
+    const Bytes descriptor = track.codec == AudioCodec::kAc3 ? build_ac3_descriptor()
+                                                              : build_enhanced_ac3_descriptor();
+    return Writer(
+        track, options,
+        build_pat_section(options.transport_stream_id, options.program_number, options.pmt_pid),
+        build_pmt_section(options.program_number, options.audio_pid, descriptor));
+}
+
+Writer::Writer(AudioTrack track, MuxOptions options, std::vector<std::byte> pat_section,
+               std::vector<std::byte> pmt_section)
+    : track_(std::move(track)),
+      options_(std::move(options)),
+      pat_section_(std::move(pat_section)),
+      pmt_section_(std::move(pmt_section)) {}
+
+std::expected<std::vector<std::byte>, MuxError> Writer::push(
+    std::span<const std::byte> access_unit) {
+    // One iteration of mux()'s own loop, with the cross-unit state - the
+    // continuity counters and the index the 90 kHz clock derives from -
+    // living on this object instead of the stack. Same statements, same
+    // order, so the concatenated output is mux()'s, byte for byte.
+    Bytes out;
+    const std::uint32_t psi_period = std::max<std::uint32_t>(options_.psi_repeat_every_au, 1);
+    if (index_ % psi_period == 0) {
+        write_psi_packet(out, kPatPid, pat_cc_, pat_section_);
+        write_psi_packet(out, options_.pmt_pid, pmt_cc_, pmt_section_);
+    }
+    const std::uint64_t pts = static_cast<std::uint64_t>(index_) * track_.samples_per_frame *
+                              90'000ull / track_.sample_rate;
+    auto pes = build_pes_packet(access_unit, pts);
+    if (!pes) {
+        return std::unexpected(pes.error());
+    }
+    emit_pes_packets(out, options_.audio_pid, audio_cc_, *pes, pts);
+    ++index_;
+    return out;
+}
+
+std::vector<std::byte> Writer::finalize() { return {}; }
 
 }  // namespace mpegts

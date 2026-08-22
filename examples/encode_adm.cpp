@@ -1,7 +1,7 @@
 // A real ADM BWF master, all the way to a Dolby Atmos E-AC-3 (DD+ JOC) elementary stream.
 //
 // Roadmap item B1 phase 3 of 3 (the last piece - phase 1 is ac3adm::ac3adm, src/ac3adm; phase 2 is
-// ac3::admbridge, src/adm_bridge). This is a minimal, standalone illustration of the same pipeline
+// ac3::admbridge, src/admbridge). This is a minimal, standalone illustration of the same pipeline
 // ac3cli's 'atmos-adm' command drives for real: ac3adm::parse_bw64() reads the container + ADM XML
 // graph, ac3::admbridge::build() maps it onto ac3::oba::AtmosEncoder's flat object-list input
 // shape (one bed speaker feed pinned in place, one dynamic object panned by its own authored
@@ -21,7 +21,7 @@
 //
 // Run with `--write-fixture <path>` to just write that same fixture to a real file and exit,
 // skipping the parse/bridge/encode demo below - see main()'s own comment on why
-// scripts/run-codec-matrix.sh uses exactly this to drive a real `ac3cli atmos-adm` invocation.
+// tools/ci/run_codec_matrix.sh uses exactly this to drive a real `ac3cli atmos-adm` invocation.
 
 #include <cmath>
 #include <cstdint>
@@ -218,12 +218,12 @@ bool write_fixture(const std::string& path) {
 
 int main(int argc, char** argv) {
     // --write-fixture <path>: writes only the fixture below to `path` and exits, skipping the
-    // parse/bridge/encode demo that follows. Exists so scripts/run-codec-matrix.sh (a bash
+    // parse/bridge/encode demo that follows. Exists so tools/ci/run_codec_matrix.sh (a bash
     // script with no access to this file's own C++ helpers) can reuse this exact fixture to drive
     // a real `ac3cli atmos-adm` invocation against a real file on disk, rather than a fourth copy
     // of the same byte-level BW64/ADM chunk-writing logic already duplicated (per this project's
     // own established per-file test-fixture convention) across this file, examples/read_adm.cpp
-    // and tests/test_cli_atmos_adm.cpp - three was already the considered limit; a shell script
+    // and tests/cli/test_cli_atmos_adm.cpp - three was already the considered limit; a shell script
     // reimplementing RIFF chunk framing in bash was not a fourth worth having.
     if (argc >= 3 && std::string_view{argv[1]} == "--write-fixture") {
         if (!write_fixture(argv[2])) {

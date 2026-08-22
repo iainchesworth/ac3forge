@@ -4,7 +4,7 @@
 
 #include "ac3/decoder/decoder.hpp"
 
-// Mirrors ac3cli's 'decode' path for E-AC-3 (src/cli/main.cpp:
+// Mirrors ac3cli's 'decode' path for E-AC-3 (apps/cli/main.cpp:
 // run_decode_eac3): split the raw stream into access units, then render each
 // one with a single Eac3Decoder. decode_access_unit calls split_frames and
 // decode_substream internally, so this one harness exercises the whole Annex

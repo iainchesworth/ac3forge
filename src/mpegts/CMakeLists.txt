@@ -11,7 +11,7 @@
 # library never reaches for the container and vice versa.
 #
 # Built and installed as both a static and a shared library - see
-# src/lib/CMakeLists.txt's ac3::forge for the full explanation of why an
+# src/forge/CMakeLists.txt's ac3::forge for the full explanation of why an
 # OBJECT library plus two thin wrapper targets, rather than one add_library().
 # ---------------------------------------------------------------------------
 add_library(mpegts_objects OBJECT)
@@ -41,15 +41,24 @@ target_include_directories(mpegts_objects
 
 target_compile_features(mpegts_objects PUBLIC cxx_std_23)
 
-# $<BUILD_INTERFACE:...> wrapping - see src/lib/CMakeLists.txt's identical
-# ac3forge_objects treatment for why a plain PRIVATE link isn't enough for
-# an OBJECT library that's part of an install(EXPORT) set.
-target_link_libraries(mpegts_objects PRIVATE "$<BUILD_INTERFACE:ac3::warnings>")
+# $<BUILD_INTERFACE:...> wrapping - see src/forge/CMakeLists.txt's identical
+# forge_objects treatment for why a plain PRIVATE link isn't enough for
+# an OBJECT library that's part of an install(EXPORT) set. ac3::coverage is a
+# no-op unless AC3FORGE_ENABLE_COVERAGE is on (see cmake/Coverage.cmake).
+target_link_libraries(mpegts_objects PRIVATE
+    "$<BUILD_INTERFACE:ac3::warnings>"
+    "$<BUILD_INTERFACE:ac3::coverage>")
 
 set_target_properties(mpegts_objects PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
+
+# MSVC's C4251 for the PRIVATE STL-typed members of MPEGTS_EXPORT classes
+# (mpegts::Writer's PSI section buffers) - the identical, identically-reasoned
+# suppression src/matroska/CMakeLists.txt applies for matroska::Writer; see
+# its comment for why PUBLIC and why here rather than header pragmas.
+target_compile_options(mpegts_objects PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/wd4251>")
 
 include(GenerateExportHeader)
 set_target_properties(mpegts_shared PROPERTIES DEFINE_SYMBOL "MPEGTS_BUILDING_SHARED")

@@ -6,7 +6,7 @@
 # NOT installed/exported here - it is a CLI/GUI implementation detail, not part of the
 # distributed package; see docs/library/index.md.
 #
-# include()'d from the root CMakeLists.txt after add_subdirectory(src/lib) and, for each
+# include()'d from the root CMakeLists.txt after add_subdirectory(src/forge) and, for each
 # optional component, its own guarded add_subdirectory(src/matroska|mp4|mpegts), before
 # include(Packaging) - CPack's own library component (cmake/Packaging.cmake) packages exactly
 # what gets install()'d here.
@@ -14,16 +14,15 @@
 # matroska::matroska, mp4::mp4 and mpegts::mpegts are all optional components, off-able via
 # their own AC3FORGE_BUILD_MATROSKA/AC3FORGE_BUILD_MP4/AC3FORGE_BUILD_MPEGTS option (root
 # CMakeLists.txt) - each its own AC3FORGE_BUILD_<NAME> option, its own guarded
-# add_subdirectory(), and its own guarded block below. See
-# packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska" feature, which maps onto
-# AC3FORGE_BUILD_MATROSKA for a vcpkg install; mp4::mp4 and mpegts::mpegts do not have a vcpkg
-# feature of their own yet (a follow-up, not a gap in this install() treatment) - a vcpkg
-# install always gets them.
+# add_subdirectory(), and its own guarded block below. Each maps 1:1 onto its own vcpkg
+# feature (packaging/vcpkg-port/ac3forge/vcpkg.json's "matroska"/"mp4"/"mpegts", wired
+# through portfile.cmake's vcpkg_check_features()), so a vcpkg install only gets the ones its
+# feature selection actually asked for.
 #
 # Every install() rule below carries COMPONENT library: without one, CPack
 # files it under its own "Unspecified" component, inconsistent once
 # component-based packaging is on (see cmake/Packaging.cmake) - same reason
-# src/cli/CMakeLists.txt's ac3cli install() carries COMPONENT runtime.
+# apps/cli/CMakeLists.txt's ac3cli install() carries COMPONENT runtime.
 #
 # The LIBRARY DESTINATION rules below additionally carry NAMELINK_COMPONENT
 # library, splitting them from COMPONENT libruntime. On Unix, a versioned
@@ -58,24 +57,41 @@ include(CMakePackageConfigHelpers)
 # install()'d/exported is filtered by this option, so nothing above this point in the tree
 # needs touching for it to take effect.
 option(AC3FORGE_INSTALL_BOTH_LINKAGES "Install/export both static and shared library variants (OFF installs only the BUILD_SHARED_LIBS-selected one)" ON)
+
 if(AC3FORGE_INSTALL_BOTH_LINKAGES)
     set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
+    set(_ac3forge_signing_install_targets signing_objects signing_static signing_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static mpegts_shared)
-    set(_ac3forge_capi_install_targets capi_objects capi_static capi_shared)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_static forge_c_shared)
 elseif(BUILD_SHARED_LIBS)
-    set(_ac3forge_forge_install_targets forge_objects forge_shared)
+    # ac3::forge_c (src/capi/CMakeLists.txt) statically embeds ac3::forge_static PRIVATE
+    # unconditionally, regardless of BUILD_SHARED_LIBS - see that file's header comment for why
+    # (a self-contained C ABI, not one that depends on a separately-shipped forge shared
+    # library). forge_c_objects is an OBJECT library, so that PRIVATE dependency still ends up in
+    # forge_c_objects's own INTERFACE_LINK_LIBRARIES (OBJECT libraries have no link step of their
+    # own to hide it behind) - and since forge_c_objects is itself part of capiTargets whenever
+    # AC3FORGE_BUILD_CAPI is ON, forge_static must be in an export set too, or install(EXPORT
+    # capiTargets) fails with "requires target forge_static that is not in any export set."
+    # forge_shared has no such requirement, so it doesn't need the same treatment here.
+    if(AC3FORGE_BUILD_CAPI)
+        set(_ac3forge_forge_install_targets forge_objects forge_static forge_shared)
+    else()
+        set(_ac3forge_forge_install_targets forge_objects forge_shared)
+    endif()
+    set(_ac3forge_signing_install_targets signing_objects signing_shared)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_shared)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_shared)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_shared)
-    set(_ac3forge_capi_install_targets capi_objects capi_shared)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_shared)
 else()
     set(_ac3forge_forge_install_targets forge_objects forge_static)
+    set(_ac3forge_signing_install_targets signing_objects signing_static)
     set(_ac3forge_matroska_install_targets matroska_objects matroska_static)
     set(_ac3forge_mp4_install_targets mp4_objects mp4_static)
     set(_ac3forge_mpegts_install_targets mpegts_objects mpegts_static)
-    set(_ac3forge_capi_install_targets capi_objects capi_static)
+    set(_ac3forge_capi_install_targets forge_c_objects forge_c_static)
 endif()
 
 # Two separate EXPORT sets, not the one combined set an earlier draft of this
@@ -85,6 +101,14 @@ endif()
 # matroska::matroska_shared. Both still land in the one ac3forgeConfig.cmake
 # a consumer's find_package(ac3forge) resolves - see ac3forgeConfig.cmake.in,
 # which include()s both generated *Targets.cmake files.
+#
+# forgeTargets (not ac3forgeTargets): every other export set here is named
+# after its own AC3FORGE_BUILD_<NAME> component switch (matroskaTargets,
+# mp4Targets, mpegtsTargets, capiTargets) - forge has no such switch, since
+# it's the one mandatory, always-built component, but it still gets named
+# after its own component identity ("forge", matching its raw target names
+# forge_static/forge_shared) rather than after the overall package, for the
+# same consistency reason.
 # The _objects OBJECT library has to be in the same export set as the
 # _static/_shared targets that PUBLIC-link it, even though nothing about it
 # needs installing on its own (its compiled code is already embedded in the
@@ -92,26 +116,44 @@ endif()
 # since it can't resolve a usage-requirement dependency that isn't itself
 # part of any export set.
 install(TARGETS ${_ac3forge_forge_install_targets}
-    EXPORT ac3forgeTargets
+    EXPORT forgeTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
 
 # Source headers, from ac3::forge's include/ tree.
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/lib/include/"
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/forge/include/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     COMPONENT library)
 
 # Generated headers - ac3/version.hpp (from ac3/version.hpp.in) and the
 # generate_export_header() output - live in the library's own binary dir, not
-# its source tree (see src/lib/CMakeLists.txt), so the install(DIRECTORY
+# its source tree (see src/forge/CMakeLists.txt), so the install(DIRECTORY
 # .../include/) call above never sees them. A consumer's
 # #include <ac3/version.hpp>/<ac3/export.hpp> needs both installed at the
 # same relative paths the in-tree BUILD_INTERFACE include dirs already use.
 install(FILES
-        "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/version.hpp"
-        "${CMAKE_BINARY_DIR}/src/lib/generated/ac3/export.hpp"
+        "${CMAKE_BINARY_DIR}/src/forge/generated/ac3/version.hpp"
+        "${CMAKE_BINARY_DIR}/src/forge/generated/ac3/export.hpp"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3"
+    COMPONENT library)
+
+# ac3::signing is mandatory, not an AC3FORGE_BUILD_<NAME>-gated optional component (same as
+# ac3::forge itself, unconditionally add_subdirectory()'d in the root CMakeLists.txt) - so unlike
+# matroska::matroska/mp4::mp4/mpegts::mpegts/ac3::forge_c below, its install/export block carries
+# no if(AC3FORGE_BUILD_...) guard.
+install(TARGETS ${_ac3forge_signing_install_targets}
+    EXPORT signingTargets
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT library
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libruntime NAMELINK_COMPONENT library
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT library)
+
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/signing/include/"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT library)
+
+install(FILES "${CMAKE_BINARY_DIR}/src/signing/generated/ac3/signing/export.hpp"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ac3/signing"
     COMPONENT library)
 
 # matroska::matroska is an optional component (AC3FORGE_BUILD_MATROSKA, see the root
@@ -140,9 +182,8 @@ endif()
 # shape as matroska::matroska above including the AC3FORGE_INSTALL_BOTH_LINKAGES-selected
 # target list - its targets, headers and export set only exist to install when the component
 # was actually built. ac3forgeConfig.cmake.in's include() of mp4Targets.cmake is itself
-# conditional (if(EXISTS)) to match. mp4::mp4 has no vcpkg port feature of its own yet
-# (packaging/vcpkg-port/ac3forge/vcpkg.json only defines "matroska") - a follow-up, not a gap
-# in this install() treatment.
+# conditional (if(EXISTS)) to match. Maps onto its own "mp4" vcpkg feature the same way
+# matroska does (packaging/vcpkg-port/ac3forge/vcpkg.json).
 if(AC3FORGE_BUILD_MP4)
     install(TARGETS ${_ac3forge_mp4_install_targets}
         EXPORT mp4Targets
@@ -160,8 +201,8 @@ if(AC3FORGE_BUILD_MP4)
 endif()
 
 # mpegts::mpegts is an optional component (AC3FORGE_BUILD_MPEGTS, see the root
-# CMakeLists.txt) - same shape as matroska::matroska immediately above, not yet exposed as its
-# own vcpkg feature (packaging/vcpkg-port/ac3forge/), unlike matroska's "matroska" feature.
+# CMakeLists.txt) - same shape as matroska::matroska immediately above, including its own
+# "mpegts" vcpkg feature (packaging/vcpkg-port/ac3forge/vcpkg.json).
 if(AC3FORGE_BUILD_MPEGTS)
     install(TARGETS ${_ac3forge_mpegts_install_targets}
         EXPORT mpegtsTargets
@@ -210,7 +251,7 @@ configure_package_config_file(
     INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge")
 
 # SameMajorVersion, not exact: pre-1.0, there is no ABI-compatibility promise
-# across any two releases (see src/lib/CMakeLists.txt's SOVERSION comment for
+# across any two releases (see src/forge/CMakeLists.txt's SOVERSION comment for
 # the full reasoning), but SameMajorVersion is the conventional default and
 # is what actually governs here - find_package()'s own version matching
 # against a requested `find_package(ac3forge X.Y.Z)`, not the .so's SONAME
@@ -227,8 +268,14 @@ install(FILES
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
     COMPONENT library)
 
-install(EXPORT ac3forgeTargets
-    FILE ac3forgeTargets.cmake
+install(EXPORT forgeTargets
+    FILE forgeTargets.cmake
+    NAMESPACE ac3::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
+    COMPONENT library)
+
+install(EXPORT signingTargets
+    FILE signingTargets.cmake
     NAMESPACE ac3::
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ac3forge"
     COMPONENT library)

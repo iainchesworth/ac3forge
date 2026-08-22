@@ -19,12 +19,12 @@
 //
 // FFmpeg has no reading at all of enhanced coupling, transient pre-noise
 // processing, or a second dependent substream (7.1.4) - see
-// docs/verification.md's "Where the oracles don't reach" and run-codec-
+// docs/verification.md's "Where the oracles don't reach" and tools/ci/run_codec_
 // matrix.sh's own header comment. None of that needs special-casing here:
 // whatever the reason FFmpeg declines a stream this project's own decoder
 // accepted - a known gap or a genuine bug on either side -
 // ffmpeg_strict_decode simply returns false and run_differential treats it
-// as "no oracle for this one", the exact same stance run-codec-matrix.sh
+// as "no oracle for this one", the exact same stance run_codec_matrix.sh
 // already takes by skipping those streams outright rather than tolerating a
 // known failure.
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
@@ -39,7 +39,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     ac3::DecodedAccessUnit first{};
     bool have_first = false;
 
-    // Mirrors ac3cli's own 'decode' path for E-AC-3 (src/cli/main.cpp:
+    // Mirrors ac3cli's own 'decode' path for E-AC-3 (apps/cli/main.cpp:
     // run_decode_eac3) exactly, including the §3.7 transient-pre-noise-
     // processing hold-back convention (decode_access_unit's own doc
     // comment) and the end-of-stream flush() below.

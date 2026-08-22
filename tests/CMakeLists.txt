@@ -45,53 +45,54 @@ if(NOT Catch2_FOUND)
 endif()
 
 add_executable(ac3tests
-    test_analysis.cpp
-    test_assignment.cpp
-    test_atmos.cpp
-    test_atmos_motion.cpp
-    test_audio_backend.cpp
-    test_bitalloc.cpp
-    test_bitwriter.cpp
-    test_coupling.cpp
-    test_crc16.cpp
-    test_decoder.cpp
-    test_drc.cpp
-    test_dsp_biquad.cpp
-    test_dsp_resampler.cpp
-    test_eac3.cpp
-    test_eac3_decoder.cpp
-    test_elementary.cpp
-    test_emdf.cpp
-    test_encoder.cpp
-    test_enhanced_coupling.cpp
-    test_exponents.cpp
-    test_fft.cpp
-    test_fmp4.cpp
-    test_frame.cpp
-    test_iec61937.cpp
-    test_live_downmix.cpp
-    test_loudness.cpp
-    test_mantissas.cpp
-    test_matroska.cpp
-    test_mdct.cpp
-    test_mdct_fast.cpp
-    test_meta_qc.cpp
-    test_mixing.cpp
-    test_mp4.cpp
-    test_mpegts.cpp
-    test_oba.cpp
-    test_plan.cpp
-    test_resampler.cpp
-    test_ring_buffer.cpp
-    test_selfcheck.cpp
-    test_signing.cpp
-    test_spatial.cpp
-    test_tables.cpp
-    test_transient.cpp
-    test_transient_prenoise.cpp
-    test_watchdog.cpp
-    test_wav.cpp
-    test_wav_stream_writer.cpp)
+    analysis/test_analysis.cpp
+    encoder/test_assignment.cpp
+    oba/test_atmos.cpp
+    oba/test_atmos_motion.cpp
+    audio/test_audio_backend.cpp
+    core/test_bitalloc.cpp
+    core/test_bitwriter.cpp
+    encoder/test_coupling.cpp
+    core/test_crc16.cpp
+    decoder/test_decoder.cpp
+    meta/test_drc.cpp
+    dsp/test_dsp_biquad.cpp
+    dsp/test_dsp_resampler.cpp
+    encoder/test_eac3.cpp
+    decoder/test_eac3_decoder.cpp
+    io/test_elementary.cpp
+    emdf/test_emdf.cpp
+    encoder/test_encoder.cpp
+    encoder/test_enhanced_coupling.cpp
+    core/test_exponents.cpp
+    core/test_fft.cpp
+    containers/test_fmp4.cpp
+    core/test_frame.cpp
+    sinks/test_iec61937.cpp
+    decoder/test_live_downmix.cpp
+    meta/test_loudness.cpp
+    core/test_mantissas.cpp
+    containers/test_matroska.cpp
+    core/test_mdct.cpp
+    core/test_mdct_fast.cpp
+    meta/test_meta_qc.cpp
+    meta/test_mixing.cpp
+    containers/test_mp4.cpp
+    containers/test_mpegts.cpp
+    oba/test_oba.cpp
+    encoder/test_plan.cpp
+    audio/test_resampler.cpp
+    audio/test_ring_buffer.cpp
+    verify/test_selfcheck.cpp
+    signing/test_signing.cpp
+    spatial/test_spatial.cpp
+    core/test_tables.cpp
+    encoder/test_transient.cpp
+    decoder/test_transient_prenoise.cpp
+    audio/test_watchdog.cpp
+    io/test_wav.cpp
+    io/test_wav_stream_reader.cpp
+    io/test_wav_stream_writer.cpp)
 
 # test_signing.cpp reaches ac3::signing's internal crypto headers (sha256.hpp/
 # hmac_sha256.hpp) to run the FIPS/RFC known-answer vectors directly - they are
@@ -118,17 +119,17 @@ target_compile_definitions(ac3tests
 # for clang-cl too) rather than on WIN32.
 # ---------------------------------------------------------------------------
 if(MSVC)
-    target_sources(ac3tests PRIVATE platform/msvc/crt_report.cpp)
+    target_sources(ac3tests PRIVATE crt/msvc/crt_report.cpp)
 else()
-    target_sources(ac3tests PRIVATE platform/stub/crt_report.cpp)
+    target_sources(ac3tests PRIVATE crt/stub/crt_report.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
 # The audio backend's own tests, on the same axis the library selects it on.
 #
-# src/audio/CMakeLists.txt compiles exactly one src/platform/<backend>/ directory
+# src/audio/CMakeLists.txt compiles exactly one src/backend/<backend>/ directory
 # and publishes which one; a backend with device-free logic worth testing gets
-# a matching tests/platform/<backend>/ directory here, added only in the build
+# a matching tests/backend/<backend>/ directory here, added only in the build
 # that compiled it. So the suite can never test a backend the library does not
 # contain, and no test source needs to ask which platform it is on.
 #
@@ -136,13 +137,13 @@ endif()
 # the contract EVERY backend keeps, including the one that refuses everything.
 # ---------------------------------------------------------------------------
 if(AC3FORGE_AUDIO_BACKEND STREQUAL "alsa")
-    target_sources(ac3tests PRIVATE platform/alsa/test_alsa_device_names.cpp)
+    target_sources(ac3tests PRIVATE backend/alsa/test_alsa_device_names.cpp)
     # The backend's internal header. Not part of the library's public
     # interface and deliberately not installed - it is on the include path for
     # this target only, and only in this configuration.
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "pipewire")
-    target_sources(ac3tests PRIVATE platform/pipewire/test_pipewire_support.cpp)
+    target_sources(ac3tests PRIVATE backend/pipewire/test_pipewire_support.cpp)
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
     # test_pipewire_support.cpp includes pipewire_support.hpp directly, which
     # in turn includes PipeWire's own headers - the same PkgConfig::PipeWire
@@ -155,45 +156,61 @@ elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "android")
     # this branch is future-proofing should that ever change, matching the
     # alsa branch's shape exactly rather than assuming android can never
     # reach here.
-    target_sources(ac3tests PRIVATE platform/android/test_android_support.cpp)
+    target_sources(ac3tests PRIVATE backend/android/test_android_support.cpp)
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 elseif(AC3FORGE_AUDIO_BACKEND STREQUAL "macos")
     # Unlike alsa/android above, this branch DOES run on desktop-hosted
     # ac3tests for real: src/audio/CMakeLists.txt selects macos/
     # unconditionally under APPLE, so every macOS CI leg's ac3tests build
     # compiles and runs this file.
-    target_sources(ac3tests PRIVATE platform/macos/test_macos_support.cpp)
+    target_sources(ac3tests PRIVATE backend/macos/test_macos_support.cpp)
     target_include_directories(ac3tests PRIVATE "${AC3FORGE_AUDIO_BACKEND_DIR}")
 endif()
 
 # ---------------------------------------------------------------------------
-# ac3cli integration tests (test_cli.cpp). main.cpp compiles straight into
+# ac3cli integration tests (cli/test_cli.cpp). main.cpp compiles straight into
 # the ac3cli executable with everything in an anonymous namespace, so there
 # is no library surface for parse_options/gather_frame/run_atmos_encode's own
 # logic to link against directly - these tests instead run the real, built
 # ac3cli binary as a subprocess and inspect what it actually wrote.
 #
 # Only added when ac3cli itself is being built (AC3FORGE_BUILD_CLI): the
-# top-level CMakeLists.txt processes src/cli before tests/, so the target
+# top-level CMakeLists.txt processes apps/cli before tests/, so the target
 # already exists here whenever it is going to.
 # ---------------------------------------------------------------------------
 if(TARGET ac3cli)
-    target_sources(ac3tests PRIVATE test_cli.cpp)
+    target_sources(ac3tests PRIVATE cli/test_cli.cpp)
     target_compile_definitions(ac3tests PRIVATE "AC3CLI_EXE=\"$<TARGET_FILE:ac3cli>\"")
+endif()
+
+# RecordingSink (gui/test_recording_sink.cpp) is the GUI's one deliberately
+# Qt-free class - std:: and the container libraries only, exactly so its
+# streamed-equals-one-shot contract can be held here, in the plain Catch2
+# suite, without a QML engine in the room (apps/gui's Qt Quick tests cover
+# the interactive surfaces; this covers the bytes). Its source compiles
+# straight into this target the same way cli/test_cli.cpp's subject rides
+# its own binary: there is no GUI library surface to link against. Gated on
+# the ac3gui target like the CLI block above - the file lives in apps/gui,
+# which has only been add_subdirectory()'d when AC3FORGE_BUILD_GUI is ON.
+if(TARGET ac3gui)
+    target_sources(ac3tests PRIVATE
+        gui/test_recording_sink.cpp
+        "${CMAKE_SOURCE_DIR}/apps/gui/recording_sink.cpp")
+    target_include_directories(ac3tests PRIVATE "${CMAKE_SOURCE_DIR}/apps/gui")
 endif()
 
 # ac3adm::ac3adm is opt-in (AC3FORGE_BUILD_ADM, default OFF - see the root CMakeLists.txt's own
 # option() for why it is not on by default like matroska/mp4/mpegts) - test_adm.cpp is only
-# added, and ac3adm::ac3adm only linked, when that option turned this target on. Unlike test_cli.cpp
+# added, and ac3adm::ac3adm only linked, when that option turned this target on. Unlike cli/test_cli.cpp
 # above this can't key off TARGET ac3adm::ac3adm existing, since that alias is only defined
 # inside src/ac3adm/CMakeLists.txt's own add_subdirectory(), which never runs unless
 # AC3FORGE_BUILD_ADM is already ON - so the option itself is what's checked here instead.
 #
-# test_adm_bridge.cpp (ac3::admbridge, roadmap B1 phase 2, src/adm_bridge) rides the same gate:
-# it depends on ac3adm::ac3adm too, and src/adm_bridge is only add_subdirectory()'d from inside
+# test_adm_bridge.cpp (ac3::admbridge, roadmap B1 phase 2, src/admbridge) rides the same gate:
+# it depends on ac3adm::ac3adm too, and src/admbridge is only add_subdirectory()'d from inside
 # the same if(AC3FORGE_BUILD_ADM) block in the root CMakeLists.txt.
 if(AC3FORGE_BUILD_ADM)
-    target_sources(ac3tests PRIVATE test_adm.cpp test_adm_bridge.cpp)
+    target_sources(ac3tests PRIVATE adm/test_adm.cpp admbridge/test_adm_bridge.cpp)
     target_link_libraries(ac3tests PRIVATE ac3adm::ac3adm ac3::admbridge)
 endif()
 
@@ -201,20 +218,20 @@ endif()
 # above to hold at once, not just AC3FORGE_BUILD_ADM alone: it runs the real, built ac3cli binary
 # as a subprocess (AC3CLI_EXE, defined only inside the `if(TARGET ac3cli)` block above) against an
 # ADM fixture, so the command it exercises only exists in that binary at all when
-# AC3FORGE_BUILD_ADM was ALSO on for this same configure (src/cli/CMakeLists.txt's own
+# AC3FORGE_BUILD_ADM was ALSO on for this same configure (apps/cli/CMakeLists.txt's own
 # AC3FORGE_BUILD_ADM guard). Neither `if(TARGET ac3cli)` alone (AC3FORGE_BUILD_ADM could be off,
 # and 'atmos-adm' simply would not exist in that binary) nor `if(AC3FORGE_BUILD_ADM)` alone
 # (AC3CLI_EXE might not be defined at all, e.g. AC3FORGE_BUILD_CLI=OFF) is sufficient by itself -
 # both are checked together here, after both blocks above have already run.
 if(AC3FORGE_BUILD_ADM AND TARGET ac3cli)
-    target_sources(ac3tests PRIVATE test_cli_atmos_adm.cpp)
+    target_sources(ac3tests PRIVATE cli/test_cli_atmos_adm.cpp)
 endif()
 
 # ac3::forge_c is an optional component (AC3FORGE_BUILD_CAPI, default ON - see the root
 # CMakeLists.txt) - test_capi.cpp (roadmap F1) only exists to build when it was actually built,
 # the same shape as the AC3FORGE_BUILD_ADM-gated sources above.
 if(AC3FORGE_BUILD_CAPI)
-    target_sources(ac3tests PRIVATE test_capi.cpp)
+    target_sources(ac3tests PRIVATE capi/test_capi.cpp)
     target_link_libraries(ac3tests PRIVATE ac3::forge_c)
 endif()
 

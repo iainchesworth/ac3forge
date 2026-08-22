@@ -6,7 +6,7 @@ below, not edited by hand in any of the .ico/.icns/.png/mipmap files this
 writes. Re-run this script (`python assets/icon/generate_icons.py`) after
 changing the design, rather than touching a generated output directly.
 Mirrors the "commit the binary asset into the tree" precedent
-src/gui/fonts/*.ttf already sets for this project - just generated here
+apps/gui/fonts/*.ttf already sets for this project - just generated here
 rather than third-party.
 
 Pillow only (confirmed available: 12.3+, including native ICO and ICNS
@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# The WASM demo page's own existing palette (platform/wasm/index.html's
+# The WASM demo page's own existing palette (apps/wasm/index.html's
 # :root CSS vars: --bg/--accent) - reused here rather than inventing a
 # third brand color for a project that already has one established.
 BG = (11, 18, 32, 255)  # #0b1220
@@ -153,7 +153,7 @@ ANDROID_DENSITIES = (
 
 
 def main() -> None:
-    icons_dir = REPO_ROOT / "src" / "gui" / "icons"
+    icons_dir = REPO_ROOT / "apps" / "gui" / "icons"
     icons_dir.mkdir(parents=True, exist_ok=True)
 
     write_ico(icons_dir / "ac3forge.ico")
@@ -162,7 +162,7 @@ def main() -> None:
     render_badge(256).save(icons_dir / "ac3forge-256.png")
     print(f"wrote {icons_dir}/ac3forge.{{ico,icns}}, ac3forge-{{32,256}}.png")
 
-    res_dir = REPO_ROOT / "platform" / "android" / "app" / "src" / "main" / "res"
+    res_dir = REPO_ROOT / "apps" / "android" / "app" / "src" / "main" / "res"
 
     # Legacy launcher icon, every density bucket - the fallback for
     # launchers/contexts (app-list entries, Settings) that don't use the
@@ -188,7 +188,7 @@ def main() -> None:
     render_banner().save(banner_dir / "banner.png")
     print(f"wrote {banner_dir}/banner.png")
 
-    wasm_dir = REPO_ROOT / "platform" / "wasm"
+    wasm_dir = REPO_ROOT / "apps" / "wasm"
     render_badge(32).save(wasm_dir / "favicon-32.png")
     print(f"wrote {wasm_dir}/favicon-32.png")
 

@@ -6,10 +6,15 @@ troubleshooting, see [Building from source](../building.md).
 
 ## Toolchains
 
-Built and tested with **GCC 15.2** and **Clang 21.1** on **Ubuntu 26.04 (WSL2)** — the versions
-CI pins. The pin is a CI reproducibility choice, not a hard floor of the code:
+Built and tested with **GCC 16** and **Clang 21.1** on **Ubuntu 26.04 (WSL2)** — the versions
+CI pins. Note that 26.04's own archive currently carries `gcc-16` as a pre-release/experimental
+trunk snapshot in its `universe` component (`02-gcc-toolchain.sh` enables `universe` to reach
+it) rather than the finished 16.1 release, which lands in a later Ubuntu series first — this is
+Ubuntu's packaging timing, not a project choice, and the pin tracks whatever `apt` resolves for
+`gcc-16` without further action needed here once 26.04 backports the stable release. The pin
+itself is a CI reproducibility choice, not a hard floor of the code:
 `cmake/toolchains/linux.{gcc,llvm}.toolchain.cmake` already `find_program` a fallback list
-(`gcc-15, gcc, gcc-14, gcc-13` / `clang-21, clang, clang-20, clang-19`), so an older distro
+(`gcc-16, gcc, gcc-15, gcc-14, gcc-13` / `clang-21, clang, clang-20, clang-19`), so an older distro
 compiler is picked up automatically — the [Raspberry Pi
 validation](raspberry-pi.md#verified-configuration) built and passed the full suite with
 GCC 14.2 and Clang 19.1.7.
@@ -153,7 +158,7 @@ Two more legs, `linux-gcc-arm64` and `linux-llvm-arm64`, run the same matrix on 
 [Raspberry Pi](raspberry-pi.md), which is the hardware this arch target is validated
 against.
 
-The ALSA backend adds 14 tests of its own (`tests/platform/alsa/`) on top of the base suite: a
+The ALSA backend adds 14 tests of its own (`tests/backend/alsa/`) on top of the base suite: a
 Linux build with the GUI on and `libasound2-dev` absent runs the same suite as Windows, and ALSA
 adds those 14. `ctest --preset test-linux-gcc-debug` (or whichever preset matches your build)
 runs the full suite. See [Verified configuration](../building.md#verified-configuration)

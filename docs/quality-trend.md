@@ -1,7 +1,7 @@
 # Quality trend
 
 Every push to `develop` or `main` that gets through the [gold-reference
-gate](https://github.com/iainchesworthlabs/ac3forge/blob/main/scripts/verify-gold-reference.sh)
+gate](https://github.com/iainchesworthlabs/ac3forge/blob/main/tools/checks/verify_gold_reference.sh)
 (encode the checked-in golden 5.1 WAV, strict-decode with FFmpeg and with
 `ac3cli`'s own decoder, delay-compensated SNR between the two) has its
 per-channel numbers appended to history instead of only living in that run's
@@ -11,14 +11,14 @@ landed; what's below is what makes the *numbers*, not just the pass/fail,
 outlive the run that produced them.
 
 The gate's own threshold (currently 55 dB, see `MIN_SNR_DB` in
-`verify-gold-reference.sh`) is a fixed floor that always fails CI outright.
+`verify_gold_reference.sh`) is a fixed floor that always fails CI outright.
 On top of that, the append step applies two trailing-baseline checks against
 each run's own leg/codec history: a soft one (0.5 dB below the trailing
 10-run mean) that only annotates a row below, never fails anything, and a
 hard one (10 dB below that mean) that *does* fail the run — after the
 numbers are still recorded here, so a big regression is never silently
 un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
-`HARD_REGRESSION_DROP_DB` in `scripts/append-quality-history.py`.
+`HARD_REGRESSION_DROP_DB` in `tools/ci/append_quality_history.py`.
 
 <div id="quality-trend-app">
   <p class="quality-trend-status">Loading trend data…</p>
@@ -57,7 +57,7 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     { branch: "develop", color: "#7c4dff" },
     { branch: "main", color: "#00acc1" },
   ];
-  // Mirrors scripts/append-quality-history.py's own constants - keep these two in
+  // Mirrors tools/ci/append_quality_history.py's own constants - keep these two in
   // sync if that script's thresholds change; this is a display-only echo of the
   // same judgment call, not a second source of truth for it. Only the soft
   // (non-failing) tier is displayed here - a hard regression fails its own CI
@@ -67,14 +67,14 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
   const REGRESSION_DROP_DB = 0.5;
   const TABLE_ROWS = 40;
   // WAV channel order ac3::io::ac3_layout_for(6) expects - see
-  // tools/gen_gold_reference_wav.py - and so the order compare_wav.py's
+  // tools/generators/gen_gold_reference_wav.py - and so the order compare_wav.py's
   // channels_db is written in. Only meaningful for the current 6-channel 5.1
   // golden reference; anything else (e.g. a future Atmos-bed layout with a
   // different channel count) falls back to a plain index label rather than
   // guessing at a mapping.
   const CHANNEL_LABELS_51 = ["L", "R", "C", "LFE", "Ls", "Rs"];
   // Mirrors _build.yml's gold_reference matrix - the same 5 legs
-  // scripts/append-quality-history.py strips the "gold-reference-" artifact
+  // tools/ci/append_quality_history.py strips the "gold-reference-" artifact
   // prefix down to. Fixed order/colors so a leg's line keeps the same color
   // across renders instead of shuffling with whichever legs happen to have
   // data in the current view.
@@ -211,11 +211,11 @@ un-recorded just because it also failed. See `REGRESSION_DROP_DB` and
     });
   }
 
-  // verify-gold-reference.sh runs more than one check per codec now - e.g.
+  // verify_gold_reference.sh runs more than one check per codec now - e.g.
   // eac3's tools=none baseline, its tools=cpl variant, and the unrelated
   // eac3_cplbndstrce0 third-party-bitstream interop fixture all share
   // codec:"eac3" but compare fundamentally different things at deliberately
-  // different SNR floors (see scripts/append-quality-history.py's own
+  // different SNR floors (see tools/ci/append_quality_history.py's own
   // "check" field, added for the same reason). This page's chart has only
   // ever shown one line per codec, so it sticks to each codec's original,
   // continuous baseline check (check === codec) rather than folding in the
@@ -562,7 +562,7 @@ uncheck a branch's box to hide it from the chart and table.
 The **Codec** control scopes the table as well as the chart — picking
 `E-AC-3` shows only `eac3` rows, never an unrelated `ac3` row sorted in by
 date alone. Within that codec, the table still shows every **Check**:
-`verify-gold-reference.sh` can run more than one check per codec (e.g.
+`verify_gold_reference.sh` can run more than one check per codec (e.g.
 `eac3`'s own baseline round-trip alongside `eac3_cplbndstrce0`, a real
 third-party FFmpeg bitstream used to regression-test an Annex E decode fix),
 and those checks compare fundamentally different things at deliberately

@@ -6,9 +6,9 @@
 //
 // Not a Catch2 binary, same reasoning as ac3bench: nothing here asserts
 // anything. It writes one JSON record per kernel, {name, iters, ns_per_call},
-// to --json-out, for scripts/append-kernel-history.py to append to the
+// to --json-out, for tools/ci/append_kernel_history.py to append to the
 // per-kernel trend data (docs/performance-trend.md) the same way ac3bench's
-// output feeds append-performance-history.py - with one deliberate
+// output feeds append_performance_history.py - with one deliberate
 // difference: the kernel series never fails CI, at any threshold (see that
 // script's docstring for why).
 //

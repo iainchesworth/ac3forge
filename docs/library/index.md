@@ -1,11 +1,12 @@
 # Using ac3::forge
 
-The public API is the headers under `src/lib/include/ac3/`. Link `ac3::forge`; link
-`matroska::matroska` and/or `mp4::mp4` as well if you want a container writer, or `ac3adm::ac3adm`
-if you want to read a professional ADM BWF master — the one module in this list that is a reader
-rather than a writer, and so does not need `ac3::forge` linked alongside it at all. Unlike every
-other module here, `ac3adm::ac3adm` is opt-in: it is only built with `-DAC3FORGE_BUILD_ADM=ON`
-(default off), and needs several Boost header libraries pulled in via
+The public API is the headers under `src/forge/include/ac3/`. Link `ac3::forge`; link
+`matroska::matroska` and/or `mp4::mp4` as well if you want a container writer, `ac3::signing` if
+you want to apply the EMDF object-signing tag (see [Object signing](signing.md)), or
+`ac3adm::ac3adm` if you want to read a professional ADM BWF master — the one module in this list
+that is a reader rather than a writer, and so does not need `ac3::forge` linked alongside it at
+all. Unlike every other module here, `ac3adm::ac3adm` is opt-in: it is only built with
+`-DAC3FORGE_BUILD_ADM=ON` (default off), and needs several Boost header libraries pulled in via
 `-DVCPKG_MANIFEST_FEATURES=adm` — see [ADM / BW64 reading](adm.md) for why.
 
 **In-tree** (this repo `add_subdirectory`'d into a larger build, or as a git submodule):
@@ -32,6 +33,11 @@ Neither the package nor the codec itself has any dependency of its own to find: 
 is the sole exception project-wide — see the note above — and for that reason is not part of the
 installed `find_package(ac3forge)` package at all; consume it via `add_subdirectory` in-tree.)
 
+`ac3::signing` follows this exact same shape — mandatory, not gated by an
+`AC3FORGE_BUILD_<NAME>` switch, same as `ac3::forge` itself — so it resolves the identical way in
+both cases: the bare `ac3::signing` alias in-tree, and explicit `ac3::signing_static`/
+`ac3::signing_shared` from an installed package.
+
 **vcpkg.** A port lives in this repo at
 [`packaging/vcpkg-port/ac3forge/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/vcpkg-port/ac3forge) and is pending
 submission to the curated `microsoft/vcpkg` registry (see
@@ -48,12 +54,18 @@ find_package(ac3forge CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE ac3::forge)
 ```
 
-The three container writers are the port's `matroska`/`mp4`/`mpegts` features, all on by default
-(`matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` become available); leave any or all out with
-`vcpkg install ac3forge[core]` (none of them) or `ac3forge[core,mp4]` (just `mp4`) if you only
-want a subset, or only the codec. `ac3adm::ac3adm` has no vcpkg feature — see the note above,
-it isn't part of this installed package at all. Once merged into `microsoft/vcpkg`, the same two
-snippets work with a plain `vcpkg install ac3forge` — no `--overlay-ports` needed.
+The three container writers are the port's `matroska`/`mp4`/`mpegts` features — none on by
+default (a curated-registry port's `default-features` may only cover behaviors, not additional
+public APIs/targets/binaries, and each of these three is exactly that) — opt in with
+`vcpkg install ac3forge[matroska,mp4,mpegts]` (all three) or `ac3forge[mp4]` (just `mp4`) to get
+`matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` available. `ac3adm::ac3adm` has no vcpkg
+feature — see the note above, it isn't part of this installed package at all — and neither does
+`ac3::forge_c` (the C API, see [C API](c-api.md)) yet: its export set had a real bug under
+`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` (the single-linkage mode this port always uses), since fixed
+in `cmake/InstallLibrary.cmake` — but the port still passes `-DAC3FORGE_BUILD_CAPI=OFF`, since
+staying out of scope is now a deliberate choice pending a `capi` feature, not a bug workaround.
+Once merged into `microsoft/vcpkg`, the same two snippets work with a plain
+`vcpkg install ac3forge` — no `--overlay-ports` needed.
 
 **Conan.** A recipe lives in this repo at
 [`packaging/conan/`](https://github.com/iainchesworthlabs/ac3forge/tree/main/packaging/conan)

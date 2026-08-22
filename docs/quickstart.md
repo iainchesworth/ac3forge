@@ -8,7 +8,7 @@ and machine-local preset overrides.
 
 | | Version | Notes |
 |---|---|---|
-| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. One preset per compiler. |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 16, or Clang 21 | C++23. One preset per compiler. |
 | CMake | ≥ 3.28 | |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | [vcpkg](https://github.com/microsoft/vcpkg) | any recent, with `VCPKG_ROOT` set | Supplies Catch2 (plus Boost/Tracy only for the opt-in `adm`/`profiling` features — see [building.md](building.md)). |

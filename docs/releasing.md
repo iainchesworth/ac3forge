@@ -112,6 +112,12 @@ not optional polish:
 
 4. Verify the release page has all expected artifacts, and that the curated notes render and
    read well.
+5. Bump the four packaging manifests - each has its own **Every release tag** steps below, and
+   none of them happen automatically:
+   [vcpkg port](#vcpkg-port), [Homebrew formula and cask](#homebrew-formula-and-cask),
+   [winget manifest](#winget-manifest), [Conan recipe](#conan-recipe). Nothing in CI checks these
+   against the latest tag, so a release is not actually done until all four point at it - three
+   were caught stale for a full release cycle before this line existed.
 
 ## vcpkg port
 
@@ -121,12 +127,40 @@ A vcpkg port for `ac3forge` is staged in-tree at
 `portfile.cmake`, `usage`) and is pending submission to the curated `microsoft/vcpkg` registry -
 see [docs/library/index.md](library/index.md) for how a consumer uses it either
 way. It installs the library only (`ac3::forge`, plus `matroska::matroska`/`mp4::mp4`/
-`mpegts::mpegts` behind their own default-on `matroska`/`mp4`/`mpegts` features - see
+`mpegts::mpegts` behind their own `matroska`/`mp4`/`mpegts` features - see
 `cmake/InstallLibrary.cmake`'s `AC3FORGE_BUILD_MATROSKA`/`AC3FORGE_BUILD_MP4`/
 `AC3FORGE_BUILD_MPEGTS`/`AC3FORGE_INSTALL_BOTH_LINKAGES` options), never the
-CLI/GUI/tests/examples/fuzzers. `ac3adm::ac3adm` (the ADM/BW64 reader) has no vcpkg feature and
-never will while it stays outside `find_package(ac3forge)` entirely - see
-[docs/library/index.md](library/index.md).
+CLI/GUI/tests/examples/fuzzers, and never `ac3::forge_c` (`AC3FORGE_BUILD_CAPI` - see the note
+below). `ac3adm::ac3adm` (the ADM/BW64 reader) has no vcpkg feature and never will while it
+stays outside `find_package(ac3forge)` entirely - see [docs/library/index.md](library/index.md).
+
+None of the three container-writer features are on by default: a curated-registry port's
+`default-features` may only cover behaviors, not additional public APIs/targets/binaries (see
+[vcpkg's maintainer guide](https://learn.microsoft.com/vcpkg/contributing/maintainer-guide#default-features-should-enable-behaviors-not-apis))
+, and each of `matroska`/`mp4`/`mpegts` is exactly that. A plain `vcpkg install ac3forge`
+installs the codec only; opt in explicitly with `vcpkg install ac3forge[matroska,mp4,mpegts]` or
+any subset. The port also pins several build options a curated-registry review otherwise flags
+as uncontrolled: `AC3FORGE_BUILD_ADM`/`AC3FORGE_ENABLE_TRACY` explicitly OFF (already the
+project's own default, pinned so a future default change can't silently pull an undeclared
+dependency into this port), and `AC3FORGE_WITH_ALSA`/`AC3FORGE_WITH_PIPEWIRE` explicitly OFF -
+without that, this library-only build still probes the build machine's ambient ALSA/PipeWire
+installs (`src/audio/` is `add_subdirectory()`'d unconditionally outside Emscripten, not gated
+on `AC3FORGE_BUILD_CLI`/`AC3FORGE_BUILD_GUI`) even though `ac3::audio` is never installed or
+exported. `vcpkg.json` also declares `"supports": "!(android & !arm64)"` - only `arm64-v8a`
+Android is a real target (see [docs/platforms/android.md](platforms/android.md)); other Android
+architectures fail to build (`matroska`'s size comparisons assume a 64-bit `size_t`).
+
+`ac3::forge_c` (roadmap F1) is deliberately excluded via `-DAC3FORGE_BUILD_CAPI=OFF` rather than
+exposed as a feature. Its `capiTargets` export used to require `forge_static` even when
+`AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` left that target unexported - a real bug independent of
+vcpkg, fixed in `cmake/InstallLibrary.cmake` by exporting `forge_static` alongside `forge_shared`
+in that branch whenever `AC3FORGE_BUILD_CAPI` is `ON` (#227). The port keeps
+`AC3FORGE_BUILD_CAPI=OFF` regardless: `ac3::forge_c` was never part of its documented scope, and
+with the export-set bug gone, revisiting that is now a scope decision rather than a bug
+workaround - add a same-named `capi` feature to `vcpkg.json` and `portfile.cmake`'s
+`vcpkg_check_features()` call (its `AC3FORGE_BUILD_CAPI` CMake option and
+`cmake/InstallLibrary.cmake` guard already exist) and document it in
+[docs/library/index.md](library/index.md), same as `matroska`/`mp4`/`mpegts` each did.
 
 Any future optional library component follows the same three-step recipe this repo's own
 `AC3FORGE_BUILD_<NAME>` options already establish: add the CMake option and its
@@ -144,8 +178,11 @@ feature to `packaging/vcpkg-port/ac3forge/vcpkg.json` and one line to `portfile.
 2. Validate locally first (see below) before touching the upstream fork - a portfile change
    that fails vcpkg's own CI is slower to iterate on there than here.
 3. Copy the updated port files into the `microsoft/vcpkg` fork's `ports/ac3forge/`, run
-   `vcpkg x-add-version ac3forge` to regenerate `versions/baseline.json`/
-   `versions/a-/ac3forge.json` (don't hand-edit these), and open the version-bump PR.
+   `vcpkg format-manifest ports/ac3forge/vcpkg.json` (its formatting is stricter than this
+   repo's own JSON style - `vcpkg x-add-version` refuses to run against an unformatted
+   manifest) followed by `vcpkg x-add-version ac3forge` to regenerate
+   `versions/baseline.json`/`versions/a-/ac3forge.json` (don't hand-edit these), and open the
+   version-bump PR.
 
 **Validating the port locally**, any time `packaging/vcpkg-port/ac3forge/` or the CMake options
 it drives change (whether or not a release is involved):
@@ -153,14 +190,15 @@ it drives change (whether or not a release is involved):
 ```bash
 vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
 vcpkg install ac3forge --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows-static
-vcpkg install ac3forge[core] --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
+vcpkg install ac3forge[matroska,mp4,mpegts] --classic --overlay-ports=packaging/vcpkg-port --triplet x64-windows
 ```
 
 `--classic` is required from inside this repo - the root `vcpkg.json` (manifest mode, for this
 project's *own* build-time dependencies) would otherwise shadow the package-name argument.
-Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that
-`ac3forge[core]` installs without `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` at all, not
-just unlinked.
+Check for a clean post-build lint (no "not used"/"missing usage" warnings) and that the bare
+`ac3forge` install genuinely excludes `matroska::matroska`/`mp4::mp4`/`mpegts::mpegts` - not
+just unlinked, no matching files anywhere in the install tree - while
+`ac3forge[matroska,mp4,mpegts]` installs all three.
 
 Fetching a real tag only exercises whatever `AC3FORGE_BUILD_*` options actually existed in that
 tagged source - `vcpkg_from_github()`'s `REF` always points at an already-released tag, so a
@@ -224,11 +262,11 @@ The GUI (`ac3gui`) is a separate Homebrew Cask,
 [`packaging/homebrew/Casks/ac3gui.rb`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/Casks/ac3gui.rb)
 - a Cask, not a Formula, is the right shape for a bundled, prebuilt `.app` the way `ac3gui.app`
 already ships in every platform's release archive (`cmake/Packaging.cmake`'s DragNDrop `.dmg` on
-macOS). It's staged the same way the formula is, but **is not yet installable for real**: no
-tagged release has ever contained a macOS `ac3gui` build, because `macos-llvm` only started
-building the GUI at all once [GUI on macOS](platforms/macos.md#gui-on-macos) landed. The cask's
-`version`/`sha256` are placeholders until the first release tag cut after that - see the cask
-file's own header comment.
+macOS). It's staged the same way the formula is. `v0.8.0-beta.2` is the first tagged release
+whose macOS build actually contains `ac3gui` - `macos-llvm` only started building the GUI at all
+once [GUI on macOS](platforms/macos.md#gui-on-macos) landed - so the cask's `version`/`sha256`
+are now pinned from a real release rather than placeholders; see the cask file's own header
+comment.
 
 **Every release tag** needs a follow-up update to the formula, same shape as the vcpkg port's:
 
@@ -239,11 +277,11 @@ file's own header comment.
    `brew audit` is slower to iterate on there than here.
 3. Copy the updated formula into the `homebrew-ac3forge` tap's `Formula/ac3forge.rb` and push.
 
-Once the cask is real (see above), the same three steps apply to it: bump `version` to the new
-tag and `sha256` to the release's `ac3forge-*-Darwin.dmg` (`sha256sum` it, or trust CPack's own
-published `.dmg.sha512` after converting digest algorithms), validate locally, then copy
-`packaging/homebrew/Casks/ac3gui.rb` into the tap's `Casks/ac3gui.rb` and push - both files ship
-from the same tap.
+The same three steps apply to the cask now that it tracks a real release too: bump `version` to
+the new tag and `sha256` to the release's `ac3forge-*-Darwin.dmg` (`sha256sum` it, or trust
+CPack's own published `.dmg.sha512` after converting digest algorithms), validate locally, then
+copy `packaging/homebrew/Casks/ac3gui.rb` into the tap's `Casks/ac3gui.rb` and push - both files
+ship from the same tap.
 
 **Validating the formula locally**, from a macOS machine with Homebrew installed:
 
@@ -254,9 +292,8 @@ brew audit --formula ./packaging/homebrew/Formula/ac3forge.rb
 brew uninstall ac3forge
 ```
 
-**Validating the cask locally**, once it points at a real release (see
-[`packaging/homebrew/README.md`](https://github.com/iainchesworthlabs/ac3forge/blob/main/packaging/homebrew/README.md)
-for why `sha256 :no_check` blocks a real install today):
+**Validating the cask locally**, the same way, once you have a macOS machine with Homebrew
+installed - not yet run for real, same caveat as the formula above:
 
 ```bash
 brew audit --cask ./packaging/homebrew/Casks/ac3gui.rb

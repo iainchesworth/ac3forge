@@ -119,9 +119,9 @@ endif()
 # OS 13/Trixie, whose apt archive tops out at GCC 14.2.0 - the toolchain
 # files' find_program fallback (see cmake/toolchains/linux.gcc.toolchain.cmake)
 # picks it up correctly, so this is a real, reachable configuration, not a
-# hypothetical one. Two genuine repros: tests/test_cli.cpp's read_log()
+# hypothetical one. Two genuine repros: tests/cli/test_cli.cpp's read_log()
 # istreambuf_iterator-based std::string construction flags a "null pointer
-# dereference" inside <streambuf>'s gptr()/egptr(), and src/cli/main.cpp's
+# dereference" inside <streambuf>'s gptr()/egptr(), and apps/cli/main.cpp's
 # load_sources() std::vector<std::size_t>::resize() flags one inside
 # <bits/stl_construct.h> - both after GCC inlines several layers deep into
 # code this project does not own and cannot edit. This is GCC's own
@@ -138,6 +138,29 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_L
     target_compile_options(ac3_warnings INTERFACE -Wno-null-dereference)
 endif()
 
+# -Warray-bounds false positive under GCC 16 at -O2/-O3 (Release), the same
+# family as the -Wnull-dereference case just above - not seen at Debug's
+# lower optimization level, and not seen under GCC 15. Repro: both
+# decoder.cpp and eac3_decoder.cpp's mantissa-reading `read_stream` lambda
+# compute `s < nfchans && dithflag[s]`, where `dithflag` is a
+# std::array<bool, 5> and `s` is sometimes called with the coupling stream's
+# sentinel index (eac3_decoder.cpp's kCplStream, decoder.cpp's cpl_stream,
+# both == kMaxSubstreamFullbw + 1 == 6) or the LFE's index (== nfchans) -
+# values that are always >= nfchans, so `&&`'s short circuit means
+# dithflag[s] is never actually evaluated for them. GCC 16 constant-folds
+# the sentinel through the inlined call chain and flags the subscript
+# expression itself ("array subscript 6 is above array bounds ... bool
+# [5]") without accounting for the guard that prevents it ever executing -
+# GCC's own documented false-positive category for this class of check (see
+# the -Wnull-dereference case above for the general shape: post-inlining
+# analysis misattributes an optimizer-introduced "impossible" path as a
+# real out-of-bounds access in the original source). Scoped to GCC >= 16
+# specifically, mirroring the < 15 scoping above, so this stays a no-op on
+# any compiler that does not exhibit it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
+    target_compile_options(ac3_warnings INTERFACE -Wno-array-bounds)
+endif()
+
 # ---------------------------------------------------------------------------
 # AC3_WARNINGS_OFF_FLAG - switches every warning off for one source file.
 #
@@ -146,11 +169,11 @@ endif()
 # into the build tree and add it to our own target, where it inherits
 # ac3::warnings - so a warning in a file nobody here wrote becomes a build
 # failure under -Werror. It is not ours to fix, so it is not ours to warn
-# about: see how src/gui/CMakeLists.txt applies this to the generated sources.
+# about: see how apps/gui/CMakeLists.txt applies this to the generated sources.
 #
 # Not "/w" on real MSVC, deliberately. cl has very little to say about this
 # generated code under /W4 to begin with (unlike clang-cl and GCC, which
-# reject more of it - see src/gui/CMakeLists.txt for the specific warning),
+# reject more of it - see apps/gui/CMakeLists.txt for the specific warning),
 # so adding /w on top of the target's own /W4 would achieve nothing except a
 # "D9025: overriding '/W4' with '/w'" on every generated file - a warning
 # about the build, appearing on every build, to suppress warnings that were

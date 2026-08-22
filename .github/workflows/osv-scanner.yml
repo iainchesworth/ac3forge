@@ -8,6 +8,7 @@
 # block merges. dependency-review.yml is this repo's one blocking dependency
 # check - see .github/branch-protection.md. Modelled on CountdownSolver's
 # .github/workflows/osv-scanner.yml.
+name: OSV-Scanner
 
 on:
   push:

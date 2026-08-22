@@ -171,6 +171,11 @@ ac3cli decode out.ec3 out.wav
 ac3cli decode - - < out.ac3 > out.wav
 ```
 
+It decodes on the fast (FFT) inverse-transform path by default; `mode=reference` or
+`fast-imdct=off` selects the spec's direct evaluation instead — see
+[Validation → Performance and reference modes](../verification.md#performance-and-reference-modes)
+for what each mode is for, and [Options & grammars](metadata-options.md) for the token rules.
+
 For an Atmos stream, add `objects_dir` to also export each object's reconstructed audio:
 
 ```bash

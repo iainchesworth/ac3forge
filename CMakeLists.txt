@@ -8,6 +8,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersionDerivation.cmake")
 project(ac3forge
     VERSION ${DERIVED_VERSION_SEMVER}
     DESCRIPTION "Clean-room AC-3 (ATSC A/52) encoder and decoder with a spatial object layer"
+    HOMEPAGE_URL "https://github.com/iainchesworthlabs/ac3forge"
     LANGUAGES CXX)
 
 # CMake's project() VERSION field can only hold M.M.P, so a tag's prerelease
@@ -80,7 +81,7 @@ option(AC3FORGE_BUILD_MATROSKA "Build the standalone Matroska container writer (
 option(AC3FORGE_BUILD_MP4 "Build the standalone MP4/ISOBMFF container writer (src/mp4)" ON)
 option(AC3FORGE_BUILD_MPEGTS "Build the standalone MPEG-TS container writer (src/mpegts)" ON)
 
-# src/cli, src/gui, tests/ and examples/ all link matroska::matroska, mp4::mp4 and
+# apps/cli, apps/gui, tests/ and examples/ all link matroska::matroska, mp4::mp4 and
 # mpegts::mpegts unconditionally - none of them are written to cope with any of the three being
 # absent. AC3FORGE_BUILD_MATROSKA=OFF, AC3FORGE_BUILD_MP4=OFF or AC3FORGE_BUILD_MPEGTS=OFF only
 # make sense with all four also OFF (this is the shape a vcpkg build without the matching
@@ -109,7 +110,7 @@ endif()
 # roadmap item B1 phase 1 ("ADM BWF reader feeding the JOC encoder", see ROADMAP.md), parsing
 # BW64/RF64 + the Audio Definition Model rather than muxing a container. Unlike
 # matroska/mp4/mpegts, it defaults OFF rather than ON and is genuinely additive: nothing in
-# src/cli, src/gui, tests/ or examples/ links it unconditionally, so every one of those builds
+# apps/cli, apps/gui, tests/ or examples/ links it unconditionally, so every one of those builds
 # identically whether this is on or off. The reason for the different default is its
 # dependency footprint - see src/ac3adm/CMakeLists.txt's own header comment - libadm needs
 # several Boost header libraries, resolved through a dedicated opt-in vcpkg feature
@@ -124,7 +125,7 @@ option(AC3FORGE_BUILD_ADM "Build the standalone BW64/RF64 + ADM parser (src/ac3a
 option(AC3FORGE_BUILD_CAPI "Build the C API over the encode/decode core (src/capi)" ON)
 
 # Roadmap F2: the pybind11 extension module (python/) - off by default like AC3FORGE_BUILD_ADM
-# above, and for the same reason: nothing under src/, src/cli, src/gui, tests/ or examples/ links
+# above, and for the same reason: nothing under src/, apps/cli, apps/gui, tests/ or examples/ links
 # it or is affected by it either way. A normal C++ build (and every existing CI leg) is unchanged
 # with this OFF. Turned ON by python/pyproject.toml's own cmake.define when scikit-build-core
 # drives the configure for `pip install`/cibuildwheel - see python/CMakeLists.txt.
@@ -133,7 +134,7 @@ option(AC3FORGE_BUILD_PYTHON "Build the pybind11 Python extension module (python
 # enable_testing() has to run before ANY add_subdirectory() that might contain
 # an add_test() call, not merely before tests/ itself - CTest silently drops
 # an add_test() registered from a directory processed earlier in the same
-# configure pass (confirmed the hard way: src/gui/tests/'s ac3gui_qml_tests
+# configure pass (confirmed the hard way: apps/gui/tests/'s ac3gui_qml_tests
 # was invisible to `ctest -N` until this moved here). Calling it unconditionally
 # is harmless when AC3FORGE_BUILD_TESTS is OFF - nothing calls add_test() then.
 if(AC3FORGE_BUILD_TESTS)
@@ -144,11 +145,11 @@ endif()
 # Targets
 # ---------------------------------------------------------------------------
 # The library holds the entire codec and spatial engine and is GUI-free.
-add_subdirectory(src/lib)
+add_subdirectory(src/forge)
 
 # Live capture, monitor playback and IEC 61937 passthrough - the only
-# platform-specific code in the project. After src/lib (PRIVATE-links
-# ac3::forge for the IEC 61937 framer); before src/cli/src/gui/tests, which
+# platform-specific code in the project. After src/forge (PRIVATE-links
+# ac3::forge for the IEC 61937 framer); before apps/cli/apps/gui/tests, which
 # link it alongside ac3::forge for their live-audio commands/features. Not
 # linked by examples/ - none of them touch live audio.
 #
@@ -166,8 +167,8 @@ endif()
 # the HMAC construction and authenticated-region layout are in-tree, and the
 # only secret - the key - is supplied by the operator at runtime, never
 # embedded, so unlike the old quarantine overlay this is committed and built by
-# default. After src/lib so it can reuse the codec's parsing primitives; before
-# src/cli so ac3cli can link it.
+# default. After src/forge so it can reuse the codec's parsing primitives; before
+# apps/cli so ac3cli can link it.
 add_subdirectory(src/signing)
 
 # A standalone container writer, kept apart from the codec on purpose: it
@@ -202,12 +203,12 @@ if(AC3FORGE_BUILD_ADM)
     # ac3::admbridge - roadmap item B1 phase 2: maps ac3adm's parsed ADM graph onto
     # ac3::oba::AtmosEncoder. Depends on BOTH ac3::forge (added above) and ac3adm::ac3adm (just
     # added), so it is meaningless without AC3FORGE_BUILD_ADM - gated by the same flag rather
-    # than a new option of its own; see src/adm_bridge/CMakeLists.txt's own header comment for
+    # than a new option of its own; see src/admbridge/CMakeLists.txt's own header comment for
     # the full reasoning, including why this is a separate module from either side.
-    add_subdirectory(src/adm_bridge)
+    add_subdirectory(src/admbridge)
 endif()
 
-# ac3forge_c (roadmap F1) - after src/lib so ac3::forge_static exists to embed, gated by its own
+# ac3forge_c (roadmap F1) - after src/forge so ac3::forge_static exists to embed, gated by its own
 # AC3FORGE_BUILD_CAPI option (see the option() above) the same way matroska/mp4/mpegts are gated by
 # theirs.
 if(AC3FORGE_BUILD_CAPI)
@@ -224,7 +225,7 @@ endif()
 # header comment) plus the added complexity of re-exporting libbw64/libadm's own transitive
 # targets through this package - AC3FORGE_BUILD_ADM users consume ac3adm::ac3adm from an in-tree
 # add_subdirectory() build, not from a `find_package(ac3forge)` installed one, for now. ac3::admbridge
-# (src/adm_bridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
+# (src/admbridge) is excluded for the same reason - it transitively depends on ac3adm::ac3adm.
 include(InstallLibrary)
 
 # The pybind11 extension module - after ac3::forge exists (it links straight against it, the
@@ -236,11 +237,11 @@ if(AC3FORGE_BUILD_PYTHON)
 endif()
 
 if(AC3FORGE_BUILD_CLI)
-    add_subdirectory(src/cli)
+    add_subdirectory(apps/cli)
 endif()
 
 if(AC3FORGE_BUILD_GUI)
-    add_subdirectory(src/gui)
+    add_subdirectory(apps/gui)
 endif()
 
 if(AC3FORGE_BUILD_TESTS)
@@ -258,10 +259,10 @@ if(AC3FORGE_BUILD_FUZZERS)
 endif()
 
 # The browser decode demo (roadmap F3, docs/platforms/wasm.md) - a platform
-# app, same shape and reasoning as platform/android/'s Shield app: a small
+# app, same shape and reasoning as apps/android/'s Shield app: a small
 # demo consuming ac3::forge unmodified, kept out of both src/ (not library
 # code) and examples/ (not a single-API-call snippet backing a
-# docs/library/*.md page, see CONTRIBUTING.md). Unlike platform/android/,
+# docs/library/*.md page, see CONTRIBUTING.md). Unlike apps/android/,
 # which is a wholly separate Gradle/NDK build reached from the other
 # direction, this platform has no non-CMake build system to work around, so
 # it is a normal add_subdirectory() gated on EMSCRIPTEN (set by
@@ -269,10 +270,10 @@ endif()
 # AC3FORGE_BUILD_* option - there is nothing to opt in or out of on a host
 # that isn't targeting WASM in the first place.
 if(EMSCRIPTEN)
-    add_subdirectory(platform/wasm)
+    add_subdirectory(apps/wasm)
 endif()
 
-# After every target's install() rules (src/cli, src/gui) have been declared.
+# After every target's install() rules (apps/cli, apps/gui) have been declared.
 include(Packaging)
 
 message(STATUS "ac3forge ${PROJECT_VERSION_FULL}")
@@ -281,7 +282,7 @@ message(STATUS "  Build GUI      : ${AC3FORGE_BUILD_GUI}")
 message(STATUS "  Build tests    : ${AC3FORGE_BUILD_TESTS}")
 message(STATUS "  Build examples : ${AC3FORGE_BUILD_EXAMPLES}")
 message(STATUS "  Build Python   : ${AC3FORGE_BUILD_PYTHON}")
-# Which src/audio/src/platform/ directory was compiled, and so whether 'record'
+# Which src/audio/src/backend/ directory was compiled, and so whether 'record'
 # and 'play' work in this build at all - see the platform tree in
 # src/audio/CMakeLists.txt. 'posix' is the one that means no.
 message(STATUS "  Audio backend  : ${AC3FORGE_AUDIO_BACKEND}")

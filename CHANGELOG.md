@@ -12,6 +12,228 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
 
 ## [Unreleased]
 
+## [0.9.0-beta.1] - 2026-08-22
+
+Ninth tagged release. The headline is the memory-usage optimization programme landing in full:
+per-frame codec allocation churn down 54–88%, every CLI command and GUI recording streaming
+instead of buffering, and a new memory trend that gates regressions the same way the timing
+series always has — alongside a default-on fast inverse transform (4.5–4.7× faster decodes), a
+whole-library per-component coverage gate, `ac3::signing` joining the installed/exported library
+surface, and continued `apps/cli` command-group extraction.
+
+### Added
+
+- **Performance and reference transform modes.** The decoder's inverse transform joins the
+  forward MDCT in having a fast path: §7.9.4 step 3 — the one O(N²) part of the normative
+  inverse — now runs through the same radix-2 FFT core the fast forward fold uses, and after
+  its evidence was reviewed (worst transform-level relative error 7.8e-14 against the direct
+  form; 214.9 dB SNR agreement for AC-3 and 284.7 dB for E-AC-3 over 180 seconds of real 5.1
+  material) it became the default: **decodes run 4.5–4.7× faster** (a 180-second decode drops
+  from ~3.5 s to ~0.8 s), and the direct form's 320 KiB of tabulated matrices are no longer
+  built at all on the default path. The pair is exposed as one intent-level switch:
+  `mode=reference` runs every transform in a command on the spec's own direct evaluations —
+  the forms the fast paths are validated against, for fixture regeneration or sample-for-sample
+  comparison against an external decoder — and `mode=performance` (the default state) names the
+  fast paths; `fast-mdct=off` / `fast-imdct=off` still adjust one half at a time. Encoded
+  output never depends on the decode-side switch. See
+  [Validation → Performance and reference modes](docs/verification.md#performance-and-reference-modes).
+- **Span-output decode forms.** `FrameDecoder::decode_frame_into` and
+  `Eac3Decoder::decode_access_unit_into` decode into caller-owned planar storage rather than
+  allocating a fresh vector per call, with the same results as the value forms, pinned by
+  lockstep equivalence tests. The E-AC-3 form keeps
+  §3.7's transient-pre-noise hold-back semantics exactly: a held-back frame leaves the caller's
+  spans untouched and is copied out at release.
+- **Streaming I/O for unbounded sessions.** `ac3::io::WavStreamReader` (block-at-a-time WAV
+  reading with the same parsing and sample conversion as the whole-file reader),
+  `ac3::io::WavPcm16StreamWriter` (the incremental sibling of the one-shot PCM16 writer, for
+  IEC 61937 carriers whose length isn't known up front), and `mpegts::Writer` (incremental
+  transport-stream muxing whose output is byte-identical to `mpegts::mux()` — that equality is
+  its contract and its test). Matroska already had its incremental `Writer`; MP4 deliberately
+  does not get one — `moov`/`stco` need every frame's final offset, and `fragment()` (fMP4) is
+  that format's streaming shape.
+- **A memory trend beside the timing trends.** `ac3membench` counts heap allocations and
+  allocator traffic per frame, live-byte drift and peak RSS across the encoder configurations
+  *and* the decode paths the timing benches never covered; every `develop`/`main` push appends
+  to the same `quality-history` series the CPU numbers use, rendered on
+  [docs/performance-trend.md](docs/performance-trend.md) with the same trailing-baseline gates
+  (either churn metric regressing flags the row) plus an absolute leak check that applies
+  regardless of the trailing baseline.
+- **`ac3::signing` is now an installed, exported library component** (repo-structure review D6),
+  restructured into the same OBJECT+STATIC+SHARED shape `ac3::forge` itself uses
+  (`ac3::signing_static`/`ac3::signing_shared`, `AC3SIGNING_EXPORT`-annotated) instead of a
+  single internal-only `STATIC` target with no `install()` at all. `signing_static`/
+  `signing_shared` each publicly link their own matching `forge_static`/`forge_shared`,
+  preserving today's `PUBLIC ac3::forge` propagation; a real standalone
+  `find_package(ac3forge CONFIG REQUIRED)` consumer linking `ac3::signing_static` now builds and
+  runs across the installed-package boundary.
+
+### Fixed
+
+- **The encoder input-space fuzz no longer reports FFmpeg container-probe misses as encoder
+  failures.** Case seed 1124127684685913171 (stereo at 512 kbit/s, 48 kHz) produced a fully
+  valid stream — every syncframe on its exact 2048-byte boundary, both CRC words of every frame
+  good, a clean strict decode under `-f ac3` — that FFmpeg 8.0's auto-detection nonetheless
+  handed to its MPEG-PS demuxer: with frames that large, ffmpeg's AC-3 prober cannot clear its
+  own accept threshold inside the 8 KiB probe window (it wants seven consecutive syncframes),
+  while three start-code-shaped byte patterns inside ordinary quantized mantissas were enough
+  for the MPEG-PS prober to win that window outright, and no amount of appended audio can win it
+  back. `tools/ci/fuzz_encoder_space.py` now arbitrates any FFmpeg refusal by rerunning with
+  `-f ac3` forced and every error check kept — a clean forced decode classifies the case as
+  "misprobed" (counted and reported, never failing), a refused one still fails with the real
+  decode error. The seed is recorded in the script's new `--regressions` replay list, which CI
+  gates on before each unseeded search, and `fuzz/seeds/` gained a 512 kbit/s stereo stream so
+  decoder-side fuzzing mutates from the big-frame corner too.
+- **Installed packages now actually export `ac3::forge_c_static`/`ac3::forge_c_shared`**, matching
+  what [docs/library/c-api.md](docs/library/c-api.md) and the in-tree `ALIAS` targets always
+  documented. The raw CMake targets were previously `capi_static`/`capi_shared` under the `ac3::`
+  namespace with no matching alias, so an installed package actually provided `ac3::capi_static` —
+  a name nothing in the documented consumer surface used, and a `find_package(ac3forge)` consumer
+  following the docs could not link the C API at all. Fixing the name surfaced a second, more
+  serious bug: the C API's object library always privately links the static codec regardless of
+  `BUILD_SHARED_LIBS` (a deliberate self-contained-ABI design), and
+  `AC3FORGE_INSTALL_BOTH_LINKAGES=OFF` combined with a shared-only build used to leave that static
+  target out of every export set, failing the configure step outright. That combination now
+  configures, builds and installs cleanly.
+- **The Conan and Winget packaging manifests are back on the real latest release** — both were
+  still pinned to `0.8.0-beta.1` after `0.8.0-beta.2` shipped. `tools/checks/check_packaging_versions.sh`
+  now runs in CI and fails the build if any packaging manifest's version drifts from the others
+  again.
+- **The hosted WASM decode demo (`docs/assets/wasm-decode-demo/`) matches the real one again** — it
+  had silently fallen out of sync with `apps/wasm/`'s own copy (missing favicon links and the GPL
+  footer). `docs.yml`'s docs build now byte-compares the two and fails if they drift apart again.
+- **The Debian/Ubuntu package's homepage field is no longer empty** — `PROJECT_HOMEPAGE_URL` is now
+  set on the root `project()` call, so `dpkg -s ac3forge` reports the real project URL instead of
+  nothing.
+- Fixed a stale anchor in `docs/platforms/raspberry-pi.md` pointing at a `linux.md` heading whose
+  text no longer matches.
+- Fixed `docs/library/index.md` and `docs/releasing.md`'s vcpkg port sections, which still blamed
+  `ac3::forge_c`'s absence from the port on the installed-export-set bug fixed above — the port
+  has always passed `-DAC3FORGE_BUILD_CAPI=OFF` regardless of that bug and continues to now that
+  it's gone, as a deliberate scope decision pending a `capi` feature. Verified with a real
+  `vcpkg install ac3forge --overlay-ports=packaging/vcpkg-port` that the port still installs no
+  `ac3::forge_c` artifacts today.
+- **A stack-overflow-risk PREfast finding (alert #77) is fixed**: `examples/atmos_objects.cpp`
+  now heap-allocates its `Eac3Decoder` instead of stack-declaring it, the same fix already
+  applied to `atmos_fallback.cpp` and `station_broadcast.cpp` for the identical scratch-state
+  growth. Two duplicate false-positive `optional`-access findings (alerts #70/#71, in
+  `apps/gui/qc_controller.cpp`'s and `apps/cli/main.cpp`'s `measure_qc`/`measure_eac3`) are
+  documented and suppressed — a `have_first`/non-empty-stream guard already proves the meter
+  optional is engaged before use, matching a pattern already fixed once elsewhere in `main.cpp`.
+- **`misc-include-cleaner` findings that leaked back into `apps/cli/main.cpp` and
+  `commands/analysis.cpp`** after the CLI command-group extraction (both predate that move and
+  were never revisited for their own include lists) are fixed, keeping the `static-analysis` CI
+  leg green.
+
+### Changed
+
+- **The CI coverage gate now measures the whole library, per component.** The `coverage` leg
+  previously instrumented and gated the codec core (now `src/forge`) alone; it now instruments
+  every library component —
+  `ac3::forge`, `ac3::audio`, `ac3::signing`, the Matroska/MP4/MPEG-TS writers, the C API, and
+  the opt-in ADM module plus its bridge — and gates statement (line) and branch coverage per
+  component via the new `tools/checks/coverage_report.sh`, so a regression in a small module can no
+  longer hide inside a blended number. `src/forge`'s own floor rose from 80%/70% line/branch to
+  88%/78% to track the suite's growth, and the first whole-library measurement put honest floors
+  under two thin spots — `src/audio`'s device I/O paths and the C API's E-AC-3 surface — rather
+  than leaving them unmeasured. See the script's floor table for every component's numbers.
+- **The C API's E-AC-3 surface is now tested, and its coverage floor raised to match.**
+  `tests/test_capi.cpp` gained the E-AC-3 half it was missing: substream and access-unit round
+  trips across the Annex E tool combinations, dependent-substream and dual mono metadata,
+  transient pre-noise hold-back and flush, the decode/encode error mappings, and the NULL-handle
+  defaults across the whole opaque-handle surface — all on real multi-frame audio. `src/capi`'s
+  measurement moved from 48.4%/27.1% line/branch to 87.8%/79.2%, and its floor in
+  `tools/checks/coverage_report.sh` from 42/22 to 82/72 per the table's own calibration rule.
+- **Memory use no longer scales with how long a session runs.** The memory-usage optimization
+  programme changed how every front end moves audio: the CLI's encode commands stream their
+  input and their output (a 3-minute 5.1 encode peaked at 437.8 MiB before the programme and
+  9.3 MiB after; decode 217 → 28.5 MiB; `spdif` — whose IEC 61937 payload runs at the 4×
+  carrier rate — 225.7 → 18.0 MiB; an hour of `eac3-silence` 205 → 8.7 MiB), and every
+  output-producing command holds keep-partial and error semantics exactly as before, verified
+  byte-for-byte against pre-change binaries in every case. GUI recordings now stream to disk as
+  they encode for the containers whose format permits it (elementary, Matroska, MPEG-TS, the
+  IEC 61937 carrier), so a crash partway through a recording no longer loses the audio already
+  captured. The WASM demo gained real memory ceilings and reports an out-of-memory error instead
+  of the tab being killed.
+- **The codec's own per-frame allocation churn is down 85–88 % on encode and 54–61 % on
+  decode.** Working buffers that were freshly allocated every 32 ms frame — the exponent
+  strategy plan, the coupling work set, the E-AC-3 encoder's whole per-(stream, block) MDCT
+  spectrum set, the decoder's AHT and enhanced-coupling stores among them — are now owned,
+  reused storage with an every-field reset discipline, bit-exact by construction and verified
+  bit-exact in practice (AC-3 encode: 225,028 → 26,778 bytes and 286 → 86 allocations per
+  frame on the measured runner). The E-AC-3 decoder's per-substream state moved from
+  `std::map`s onto flat 32-slot arrays — the identity key space is exactly [0, 32) — for O(1)
+  lookup and zero setup allocations. Every step is recorded on the new memory trend, which now
+  gates regressions the same way the timing series always has.
+- **`apps/` now holds every platform-facing target, and internal naming matches it.**
+  `platform/{cli,gui,wasm,android}` moved to `apps/{cli,gui,wasm,android}`; `src/lib` (the codec
+  core) is now `src/forge`; `src/adm_bridge` is now `src/admbridge`; and `ac3::audio`'s former
+  three-way split (`ac3::platform`/`ac3::capture`/`ac3::sinks`) retired in favour of one
+  consolidated `ac3::audio` namespace and header tree. None of this is installed/public surface
+  except where called out separately below, so it only affects building from source, not an
+  existing library consumer.
+- **`apps/cli/main.cpp`'s single ~6,100-line file is being broken into one file per command group
+  under `apps/cli/commands/`.** The shared parsing/I/O/metering support layer, the `src=`/`map=`
+  multi-source subsystem, and the container-wrapping, audio-hardware, synthetic-signal-generator,
+  Atmos, and real-material-encode command groups have moved out so far, each verified with a full
+  rebuild and the whole test suite; `main.cpp` itself is down to 1,763 lines, with the decode and
+  level/loudness/spdif command groups still to move. The command dispatch table
+  (`kCommands`) — the thing that keeps an argv index from ever being silently wrong — is untouched
+  throughout.
+- **Build- and test-tree hygiene**: `scripts/` and `tools/` merged into one
+  `tools/{checks,generators,references,ci}/` convention; the six top-level `requirements-*.{in,txt}`
+  files moved into `requirements/`; `tests/` regrouped from ~53 flat files into subdirectories
+  mirroring `src/forge/include/ac3/<namespace>/`'s own granularity, folding in a stalled
+  platform/CRT axis split along the way; `CMakePresets.json`'s test and package presets
+  deduplicated behind hidden base presets; the `examples/` target's separate output directory (and
+  the DLL-copy machinery it required on Windows) removed by building examples alongside the shared
+  libraries like every other target already does.
+- **The installed CMake export set is now named `forgeTargets`, not `ac3forgeTargets`**, matching
+  the bare-component-name convention every other export set here already uses (`matroskaTargets`,
+  `mp4Targets`, `mpegtsTargets`, `capiTargets`) — it was the one export set named after the whole
+  package instead of its own component. Anything referencing the old `ac3forgeTargets.cmake`
+  filename directly (rather than going through `find_package(ac3forge)`, which needs no change)
+  will need updating.
+- **[CONTRIBUTING.md](CONTRIBUTING.md) now documents the repository's actual layout rule** — an
+  `ac3/<name>/` header prefix means the component depends on `ac3::forge`, a bare `<name>/` prefix
+  means it's deliberately codec-blind, and the C API is the one deliberate exception (depends on
+  the codec, but isolated as a C surface) — plus the `apps/` vs `src/` split and the per-backend
+  directory pattern. The docs site's nav also got a pass: the four data-trend pages now sit
+  contiguously, `docs/project/history.md` moved to `docs/history.md` alongside its own nav
+  siblings, and `apps/gui/icons/` gained a README marking it as generated output.
+- **`static-analysis` now enforces correct header inclusion.** clang-tidy's
+  `misc-include-cleaner` check joins the curated set the `static-analysis` CI leg gates: every
+  symbol used in `src/forge`, `src/matroska`, and `apps/cli` must have its owning header
+  `#include`d directly, not merely reachable through another header's transitive includes —
+  closing the gap where a file built only because of what a sibling header happened to pull in,
+  and would break the moment that sibling's own includes changed. The first run found 548
+  pre-existing findings (538 missing includes, almost all standard-library facades — `<span>`,
+  `<vector>`, `<expected>`, `<cstdint>`, and similar — plus a couple of `ac3::` types; 10 unused
+  includes); all were fixed mechanically with `clang-tidy -fix` as part of this change and
+  verified against a full rebuild plus a clean `ctest` run (615/615) before the check joined the
+  enforced baseline. See `.clang-tidy`'s own header comment for the full rationale.
+
+### Known gaps
+
+- The macOS `ac3gui.app` is still not Apple-notarized or code-signed — unchanged from
+  0.8.0-beta.2; this release signs artifacts with GPG and attests provenance via Sigstore/OIDC,
+  neither of which satisfies Gatekeeper. Expect a "developer cannot be verified" prompt on first
+  launch.
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA, PipeWire or CoreAudio.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
+
+## [0.8.0-beta.2] - 2026-08-19
+
+Eighth tagged release. `ac3gui` builds and packages on macOS for the first time — every
+platform's release archive now carries a real GUI, not just Windows/Linux's — plus Python
+bindings on PyPI and a C API over the encode/decode core.
+
 ### Added
 
 - **Python bindings (`ac3forge` on PyPI)**, roadmap F2: a pybind11 module bound directly onto
@@ -21,16 +243,34 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   wired up but stays off until a maintainer provisions PyPI trusted publishing — see
   [docs/releasing.md](docs/releasing.md#publishing-to-pypi). See
   [docs/library/python-api.md](docs/library/python-api.md).
-- **`ac3gui` now builds and tests on macOS.** The `macos-llvm` CI leg was CLI-only since it was
-  promoted out of experimental; it now installs Homebrew's `qt` formula and builds the GUI the
-  same opt-in way the four Linux legs do, `ac3gui_qmltests` and a headless `ac3gui --smoke`
-  included. Getting there needed two real fixes for hangs under Qt's offscreen platform plugin,
-  not just turning the option on — see [docs/platforms/macos.md](docs/platforms/macos.md#gui-on-macos).
-  `cmake/Packaging.cmake` needed no change: the macOS `.dmg` now carries `ac3gui.app` for free.
+- **A C API over the encode/decode core** (roadmap F1), for consumers that can't link C++23
+  directly.
+- **`ac3gui` now builds, tests and packages on macOS.** The `macos-llvm` CI leg was CLI-only
+  since it was promoted out of experimental; it now installs Homebrew's `qt` formula and builds
+  the GUI the same opt-in way the four Linux legs do, `ac3gui_qmltests` and a headless
+  `ac3gui --smoke` included, and this release's `ac3forge-0.8.0-Darwin.dmg` carries `ac3gui.app`
+  for the first time. Getting there needed two real fixes for hangs under Qt's offscreen platform
+  plugin, not just turning the option on — see
+  [docs/platforms/macos.md](docs/platforms/macos.md#gui-on-macos).
 - **A Homebrew Cask for `ac3gui`** is staged at `packaging/homebrew/Casks/ac3gui.rb`, alongside
   the existing CLI-only Formula — a Cask, not a Formula, being the right shape for a prebuilt
   `.app`. Not yet published to the `homebrew-ac3forge` tap; see
   [docs/releasing.md](docs/releasing.md#homebrew-formula-and-cask).
+
+### Known gaps
+
+- The macOS `ac3gui.app` is not Apple-notarized or code-signed — this release signs artifacts
+  with GPG and attests provenance via Sigstore/OIDC, neither of which satisfies Gatekeeper.
+  Expect a "developer cannot be verified" prompt on first launch.
+- Objects still will not decode as *objects* in Dolby's own decoder or hardware — unchanged from
+  0.6.0-beta.1; `verify-objects` checks a stream against its own signature, not Dolby's gate.
+- Exclusive-mode S/PDIF/HDMI passthrough has not been confirmed against real bitstreaming
+  hardware on any platform, ALSA, PipeWire or CoreAudio.
+- `fscod2` audio content has no external decode oracle at all — verified only by this project's
+  own encoder/decoder round trip.
+
+See [Validation](docs/verification.md) for the full account of what is and isn't independently
+verified.
 
 ## [0.8.0-beta.1] - 2026-08-17
 

@@ -65,7 +65,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
 
     // Same channel-order convention ac3cli's own `decode` writes a WAV with
-    // (src/cli/main.cpp: run_decode) - see ac3::io::wav_channel_order's own
+    // (apps/cli/main.cpp: run_decode) - see ac3::io::wav_channel_order's own
     // doc comment.
     const auto map = ac3::io::wav_channel_order(acmod, lfe);
     ac3forge::fuzzdiff::run_differential("ac3", bytes, ".ac3", pcm, ac3::sample_rate_hz(sample_rate),

@@ -4,6 +4,7 @@
 # vulnerability. This is the one scanner in this repo's security setup that's
 # a required, blocking check - see .github/branch-protection.md. Modelled on
 # CountdownSolver's .github/workflows/dependency-review.yml.
+name: Dependency Review
 
 on:
   pull_request:

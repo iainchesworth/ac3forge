@@ -1,0 +1,604 @@
+#include "ac3/core/mdct.hpp"
+
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <numbers>
+#include <span>
+
+#include "ac3/core/window.hpp"
+
+#include "fft_radix2.hpp"
+
+namespace ac3 {
+
+namespace {
+
+constexpr int kN = kTransformLength;  // 512
+constexpr double kPi = std::numbers::pi;
+
+// §7.9.4.1 step 2: xcos1[k] = -cos(2pi(8k+1)/8N), xsin1[k] = -sin(2pi(8k+1)/8N).
+struct Twiddles {
+    std::array<double, kN / 4> cos1;
+    std::array<double, kN / 4> sin1;
+    Twiddles() {
+        for (int k = 0; k < kN / 4; ++k) {
+            const double angle = 2.0 * kPi * (8.0 * k + 1.0) / (8.0 * kN);
+            cos1[static_cast<std::size_t>(k)] = -std::cos(angle);
+            sin1[static_cast<std::size_t>(k)] = -std::sin(angle);
+        }
+    }
+};
+
+const Twiddles& twiddles() {
+    static const Twiddles t;
+    return t;
+}
+
+// §7.9.4.2 step 2: xcos2[k] = -cos(2pi(8k+1)/4N), xsin2[k] = -sin(2pi(8k+1)/4N)
+// (N = 512 throughout this section, per the spec's own note — these are NOT
+// the 256-sample transform's own N).
+struct Twiddles2 {
+    std::array<double, kN / 8> cos2;
+    std::array<double, kN / 8> sin2;
+    Twiddles2() {
+        for (int k = 0; k < kN / 8; ++k) {
+            const double angle = 2.0 * kPi * (8.0 * k + 1.0) / (4.0 * kN);
+            cos2[static_cast<std::size_t>(k)] = -std::cos(angle);
+            sin2[static_cast<std::size_t>(k)] = -std::sin(angle);
+        }
+    }
+};
+
+const Twiddles2& twiddles2() {
+    static const Twiddles2 t;
+    return t;
+}
+
+// §7.9.4.1 step 3: the N/4-point complex "IFFT" direct-form sum needs
+// cos(8*pi*k*n/N) and sin(8*pi*k*n/N) for every (k, n) pair in the
+// kQuarter x kQuarter grid below. This depends only on (k, n), never on the
+// coefficients being transformed, so - like Twiddles/Twiddles2 above - it's
+// the same fixed matrix on every call and can be computed once instead of
+// (kQuarter^2 =) 16,384 fresh cos+sin pairs per transform.
+//
+// This is deliberately a full matrix, not a period-128 table indexed by
+// (k*n) % 128 (the trick fft.cpp's dft512 uses for its own twiddles):
+// std::cos(8*pi*k*n/N) reaches an UN-reduced angle of ~792 radians at
+// k=n=127, and empirically std::cos of that large angle differs from
+// std::cos of the small angle it's congruent to mod 2*pi by ~1.3e-13 -
+// nowhere near bit-identical, just close enough to hide under this file's
+// existing 1e-10 golden tolerances. Storing the exact expression this loop
+// already evaluated, just once instead of every call, has no such gap.
+struct InnerSumTable {
+    static constexpr int kDim = kN / 4;  // 128
+    std::array<std::array<double, kDim>, kDim> cos{};
+    std::array<std::array<double, kDim>, kDim> sin{};
+    InnerSumTable() {
+        for (int n = 0; n < kDim; ++n) {
+            for (int k = 0; k < kDim; ++k) {
+                const double angle = 8.0 * kPi * k * n / kN;
+                cos[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::cos(angle);
+                sin[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::sin(angle);
+            }
+        }
+    }
+};
+
+const InnerSumTable& inner_sum_table() {
+    static const InnerSumTable t;
+    return t;
+}
+
+// §7.9.4.2 step 3: the same idea, for the two independent N/8-point "IFFT"
+// sums (angle = 16*pi*k*n/N over the kEighth x kEighth grid).
+struct InnerSumPairTable {
+    static constexpr int kDim = kN / 8;  // 64
+    std::array<std::array<double, kDim>, kDim> cos{};
+    std::array<std::array<double, kDim>, kDim> sin{};
+    InnerSumPairTable() {
+        for (int n = 0; n < kDim; ++n) {
+            for (int k = 0; k < kDim; ++k) {
+                const double angle = 16.0 * kPi * k * n / kN;
+                cos[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::cos(angle);
+                sin[static_cast<std::size_t>(n)][static_cast<std::size_t>(k)] = std::sin(angle);
+            }
+        }
+    }
+};
+
+const InnerSumPairTable& inner_sum_pair_table() {
+    static const InnerSumPairTable t;
+    return t;
+}
+
+// §8.2.3.2 direct form, generalized over the transform length and alpha:
+// alpha = 0/N=512 is the long transform; alpha = -1/+1 at N=256 are the two
+// halves of a block-switched block.
+//
+// cos(phase) depends only on (k, n, alpha), never on the windowed signal
+// itself, and alpha only ever takes the three values above - so it is the
+// same fixed N_len x (N_len/2) matrix on every call. This used to compute
+// std::cos(phase) fresh inside the loop below, exactly like the inverse
+// transform's own step 3 does NOT (imdct512_windowed/imdct256_pair_windowed
+// precompute their twiddle factors via Twiddles/Twiddles2 above and reuse
+// them). Measured with Tracy (docs/platforms/android.md's performance
+// investigation): that recomputation was ~79% of the ENTIRE encoder's
+// per-frame cost - 131,072 std::cos() calls per 512-point transform, 36
+// transforms a frame (6 channels x 6 blocks). Precomputing the matrix once,
+// the same way the inverse transform already does, produces bit-identical
+// coefficients (same phase formula, same std::cos(), same accumulation
+// order - only WHEN it runs changes) while removing that cost from the hot
+// path entirely.
+template <int NLen>
+struct ForwardCosTable {
+    static constexpr int kHalf = NLen / 2;
+    std::array<std::array<double, static_cast<std::size_t>(NLen)>, static_cast<std::size_t>(kHalf)>
+        value{};
+    explicit ForwardCosTable(double alpha) {
+        for (int k = 0; k < kHalf; ++k) {
+            const double factor = 2.0 * k + 1.0;
+            for (int n = 0; n < NLen; ++n) {
+                const double phase = (2.0 * kPi / (4.0 * NLen)) * (2.0 * n + 1.0) * factor +
+                                      (kPi / 4.0) * factor * (1.0 + alpha);
+                value[static_cast<std::size_t>(k)][static_cast<std::size_t>(n)] = std::cos(phase);
+            }
+        }
+    }
+};
+
+const ForwardCosTable<512>& forward_cos_table_long() {
+    static const ForwardCosTable<512> t(0.0);
+    return t;
+}
+
+const ForwardCosTable<256>& forward_cos_table_first() {
+    static const ForwardCosTable<256> t(-1.0);
+    return t;
+}
+
+const ForwardCosTable<256>& forward_cos_table_second() {
+    static const ForwardCosTable<256> t(1.0);
+    return t;
+}
+
+template <int NLen>
+void mdct_forward_core(std::span<const double> windowed, const ForwardCosTable<NLen>& table,
+                       std::span<double> coeffs) {
+    for (int k = 0; k < NLen / 2; ++k) {
+        double sum = 0.0;
+        for (int n = 0; n < NLen; ++n) {
+            sum += windowed[static_cast<std::size_t>(n)] *
+                   table.value[static_cast<std::size_t>(k)][static_cast<std::size_t>(n)];
+        }
+        coeffs[static_cast<std::size_t>(k)] = (-2.0 / NLen) * sum;
+    }
+}
+
+// --- §7.9.4 fast N/4-FFT structure (the encoder-config default; see
+// mdct512_forward's own doc comment and EncoderConfig::fast_mdct /
+// eac3::FrameConfig::fast_mdct) ---------------------------------------------
+//
+// All three transforms now run fast paths, each with ITS OWN fold - a
+// distinction that matters because the direct-form phase is
+// theta_k(n) + phi_k(alpha), phi_k(alpha) = (pi/4)(2k+1)(1+alpha) - a shift
+// that depends on k but never n - and phi_k(0) = (pi/4)(2k+1) is exactly the
+// "+ N/4" term folded into the standard MDCT formula the LONG fold computes
+// (X[k] = (-2/N) sum x[n] cos(2pi/N (n+1/2+N/4)(k+1/2))). That term is NOT
+// zero, so it does not vanish for alpha = 0 - a fact worth stating plainly
+// because an earlier version of this comment claimed alpha = -1 (phi_k = 0,
+// the BARE cosine sum with no N/4 shift at all) was "the same formula" as
+// alpha = 0 "just at a different NLen". It is not: phi_k(0) != phi_k(-1), so
+// X_0 and X_{-1} are two different transforms of the same data, and a
+// standalone numerical check (comparing the long fold against a hand
+// reference implementing each phase separately) confirmed it reproduces
+// X_0 to ~1e-15 but is off by 100%+ against X_{-1}. The short transforms'
+// own folds (derived independently, each verified against ITS OWN
+// direct-form table - see their function comments below) both land on the
+// same scaled-DCT-IV core at M = 128: alpha = -1 is the DCT-IV of an
+// antisymmetric half-fold, and alpha = +1's DST-IV-shaped sum is the
+// DCT-IV of the reversed symmetric half-fold, via
+// DST4(w)[k] = (-1)^k DCT4(w_R)[k].
+//
+// Every fold computes scale * DCT-IV(u) - u a length-M "folded" input -
+// via one P = M/2-point complex FFT, the standard trick for a real-input
+// DCT-IV. The long fold was verified 2026-08-14 against ForwardCosTable
+// (this file's own direct-form ground truth) to max relative error ~3e-12
+// on both random data and real audio, the short folds 2026-08-15 the same
+// way; see tests/core/test_mdct_fast.cpp, which asserts a 1e-10 bound on all
+// three.
+
+// Everything angle-dependent in the fold below, computed once per NLen -
+// the same treatment Twiddles/InnerSumTable/ForwardCosTable give every
+// other transform in this file, applied to the fast path itself (phase-5
+// target 1 of the performance programme: this kernel runs 36x per frame in
+// every encode path, plus 6x per object per frame inside band_energy, and
+// its per-call cost was dominated by the 512 std::cos/std::sin libm calls
+// below being made fresh on every transform). Two exactness classes:
+//
+// - pre/post twiddles: the EXACT expressions the fold used to evaluate per
+//   call (std::cos/std::sin of -pi*m/M and -pi*(4k+1)/(4M)), stored instead
+//   of re-evaluated - bit-identical values, InnerSumTable's own reasoning.
+// - FFT stage twiddles + bit-reversal permutation: the previous in-place
+//   FFT generated each butterfly group's j-th twiddle by ITERATED complex
+//   multiply (w *= wlen), so it carried j-1 accumulated rounding steps.
+//   The table stores std::cos/std::sin of each exact angle -2*pi*j/len
+//   instead - a (tiny) numerical change in the direction of MORE precision,
+//   re-verified against the direct form's ground truth by
+//   tests/core/test_mdct_fast.cpp's unchanged 1e-10 bound.
+template <int NLen>
+struct FastMdctTables {
+    static constexpr std::size_t kM = static_cast<std::size_t>(NLen) / 2;
+    static constexpr std::size_t kP = kM / 2;
+    // z[m] pre-twiddle exp(-i*pi*m/M), split re/im.
+    std::array<double, kP> pre_re{};
+    std::array<double, kP> pre_im{};
+    // w[k] post-twiddle exp(-i*pi*(4k+1)/(4M)), split re/im.
+    std::array<double, kP> post_re{};
+    std::array<double, kP> post_im{};
+    // The P-point FFT's own tables (bit-reversal + stage twiddles) - the
+    // shared radix-2 core's, hoisted to fft_radix2.hpp verbatim so dft512
+    // can run the identical machinery at P = 512; see that header.
+    internal::FftRadix2Tables<kP> fft{};
+    FastMdctTables() {
+        for (std::size_t m = 0; m < kP; ++m) {
+            const double ang = -kPi * static_cast<double>(m) / static_cast<double>(kM);
+            pre_re[m] = std::cos(ang);
+            pre_im[m] = std::sin(ang);
+            const double ang2 =
+                -kPi * (4.0 * static_cast<double>(m) + 1.0) / (4.0 * static_cast<double>(kM));
+            post_re[m] = std::cos(ang2);
+            post_im[m] = std::sin(ang2);
+        }
+    }
+};
+
+template <int NLen>
+const FastMdctTables<NLen>& fast_mdct_tables() {
+    static const FastMdctTables<NLen> t;
+    return t;
+}
+
+// The scaled DCT-IV every fold below lands on: out[j] = scale * DCT4_M(u)[j]
+// for the length-M input `u`, via one P = M/2-point complex FFT - the
+// standard real-input DCT-IV factorization. z[m] = (u[2m] + i*u[M-1-2m]) *
+// exp(-i*pi*m/M); Z = FFT_P(z); w[k] = Z[k] * exp(-i*pi*(4k+1)/(4M));
+// DCT4[2k] = Re(w[k]), DCT4[M-1-2k] = -Im(w[k]). NLen names the TRANSFORM
+// whose tables carry this DCT-IV's twiddles (M = NLen/2), so the long
+// transform runs it at M = 256 and both short transforms at M = 128.
+template <int NLen>
+void dct4_scaled(const FastMdctTables<NLen>& t, std::span<const double> u,
+                 std::span<double> out, double scale) {
+    constexpr std::size_t M = FastMdctTables<NLen>::kM;
+    constexpr std::size_t P = FastMdctTables<NLen>::kP;
+    std::array<double, P> z_re{};
+    std::array<double, P> z_im{};
+    for (std::size_t m = 0; m < P; ++m) {
+        const double a = u[2 * m];
+        const double b = u[M - 1 - 2 * m];
+        z_re[m] = a * t.pre_re[m] - b * t.pre_im[m];
+        z_im[m] = a * t.pre_im[m] + b * t.pre_re[m];
+    }
+    internal::fft_radix2_forward<P>(t.fft, z_re, z_im);
+
+    for (std::size_t k = 0; k < P; ++k) {
+        const double wr = z_re[k] * t.post_re[k] - z_im[k] * t.post_im[k];
+        const double wi = z_re[k] * t.post_im[k] + z_im[k] * t.post_re[k];
+        out[2 * k] = scale * wr;
+        out[M - 1 - 2 * k] = scale * (-wi);
+    }
+}
+
+// DCT-IV-via-FFT fast path for the LONG transform (alpha = 0; see the block
+// comment above): M = NLen/2, Q = NLen/4. Quarters of `windowed`: a = [0,Q),
+// b = [Q,2Q), c = [2Q,3Q), d = [3Q,4Q). u = concat(-c_R - d, a - b_R),
+// R = reversed, length M; coeffs = (-2/NLen) * DCT4_M(u).
+template <int NLen>
+void mdct_forward_fast_core(std::span<const double> windowed, std::span<double> coeffs) {
+    constexpr std::size_t Q = static_cast<std::size_t>(NLen) / 4;
+    constexpr std::size_t M = FastMdctTables<NLen>::kM;
+    const auto& t = fast_mdct_tables<NLen>();
+
+    std::array<double, M> u{};
+    for (std::size_t i = 0; i < Q; ++i) {
+        // -c_R[i] - d[i] = -windowed[3Q-1-i] - windowed[3Q+i]
+        u[i] = -windowed[3 * Q - 1 - i] - windowed[3 * Q + i];
+    }
+    for (std::size_t j = 0; j < Q; ++j) {
+        // a[j] - b_R[j] = windowed[j] - windowed[2Q-1-j]
+        u[Q + j] = windowed[j] - windowed[2 * Q - 1 - j];
+    }
+    dct4_scaled<NLen>(t, u, coeffs, -2.0 / NLen);
+}
+
+}  // namespace
+
+void apply_analysis_window(std::span<const double, 512> x, std::span<double, 512> windowed) {
+    for (int n = 0; n < kN; ++n) {
+        windowed[static_cast<std::size_t>(n)] =
+            x[static_cast<std::size_t>(n)] * kAnalysisWindow[static_cast<std::size_t>(n)];
+    }
+}
+
+void mdct512_forward(std::span<const double, 512> windowed, std::span<double, 256> coeffs,
+                     bool fast) {
+    if (fast) {
+        mdct_forward_fast_core<512>(windowed, coeffs);
+    } else {
+        mdct_forward_core<512>(windowed, forward_cos_table_long(), coeffs);
+    }
+}
+
+void mdct256_forward_first(std::span<const double, 256> windowed, std::span<double, 128> coeffs,
+                           bool fast) {
+    // alpha = -1 is the BARE cosine sum (phi_k = 0, no "+N/4" phase shift at
+    // all) - a genuinely different transform from alpha = 0's, which is why
+    // reusing the long transform's quarter-fold for it was a math error an
+    // earlier version of this file made (see mdct_forward_fast_core's
+    // comment). Its OWN fold, derived from its own phase: with M = 128, the
+    // kernel cos(pi(2n+1)(2k+1)/512) at n' = 255-n is the n-kernel negated
+    // (cos(pi(2k+1) - phi) = -cos(phi)), so the upper half folds into the
+    // lower with a minus sign and the transform is exactly the M-point
+    // DCT-IV of v[n] = x[n] - x[255-n], scaled by -2/256. Verified against
+    // this file's direct-form table (tests/core/test_mdct_fast.cpp).
+    if (fast) {
+        std::array<double, 128> v{};
+        for (std::size_t n = 0; n < 128; ++n) {
+            v[n] = windowed[n] - windowed[255 - n];
+        }
+        dct4_scaled<256>(fast_mdct_tables<256>(), v, coeffs, -2.0 / 256);
+        return;
+    }
+    mdct_forward_core<256>(windowed, forward_cos_table_first(), coeffs);
+}
+
+void mdct256_forward_second(std::span<const double, 256> windowed, std::span<double, 128> coeffs,
+                            bool fast) {
+    // alpha = +1's phase shift turns the kernel into a sine (DST-IV-shaped)
+    // sum: cos(phi + (pi/2)(2k+1)) = (-1)^(k+1) sin(phi). Folding the upper
+    // half (sin(pi(2k+1) - psi) = +sin(psi), so it ADDS: w[n] = x[n] +
+    // x[255-n]) gives (-2/256)(-1)^(k+1) DST4_128(w) - and DST-IV is the
+    // DCT-IV of the REVERSED input with alternating signs, DST4(w)[k] =
+    // (-1)^k DCT4(w_R)[k], so the two (-1)-factors cancel to exactly
+    // (+2/256) * DCT4_128(w_R), w_R[n] = x[127-n] + x[128+n]. The "harder,
+    // DST-IV-shaped" transform the phase-4 scoping deferred thus lands on
+    // the SAME core as its siblings, one reversal away. Verified against
+    // this file's direct-form table (tests/core/test_mdct_fast.cpp).
+    if (fast) {
+        std::array<double, 128> w_r{};
+        for (std::size_t n = 0; n < 128; ++n) {
+            w_r[n] = windowed[127 - n] + windowed[128 + n];
+        }
+        dct4_scaled<256>(fast_mdct_tables<256>(), w_r, coeffs, 2.0 / 256);
+        return;
+    }
+    mdct_forward_core<256>(windowed, forward_cos_table_second(), coeffs);
+}
+
+void imdct512_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x,
+                       bool fast) {
+    const auto& tw = twiddles();
+    constexpr int kQuarter = kN / 4;  // 128
+    constexpr int kEighth = kN / 8;   // 64
+
+    // Step 2: pre-transform complex multiply.
+    // Z[k] = (X[N/2-2k-1] + j*X[2k]) * (xcos1[k] + j*xsin1[k])
+    std::array<double, kQuarter> z_re{};
+    std::array<double, kQuarter> z_im{};
+    for (int k = 0; k < kQuarter; ++k) {
+        const double a = coeffs[static_cast<std::size_t>(kN / 2 - 2 * k - 1)];
+        const double b = coeffs[static_cast<std::size_t>(2 * k)];
+        const double c = tw.cos1[static_cast<std::size_t>(k)];
+        const double s = tw.sin1[static_cast<std::size_t>(k)];
+        z_re[static_cast<std::size_t>(k)] = a * c - b * s;
+        z_im[static_cast<std::size_t>(k)] = b * c + a * s;
+    }
+
+    // Step 3: N/4-point complex "IFFT". The pseudocode's sum
+    // z[n] = sum_k Z[k] * (cos(8*pi*k*n/N) + j*sin(8*pi*k*n/N)), no scaling,
+    // is with its +j*sin convention exactly an unscaled INVERSE DFT of Z -
+    // so the fast path is the identity IDFT(Z) = conj(FFT(conj(Z))) through
+    // the same radix-2 core the forward's fast fold uses (its P = 128
+    // tables are the long fold's own, fast_mdct_tables<512>().fft). The
+    // direct branch keeps the spec's own evaluation - and keeps
+    // inner_sum_table()'s 256 KiB matrix a lazily-built oracle that a
+    // decoder running fast never materializes at all.
+    std::array<double, kQuarter> t_re{};
+    std::array<double, kQuarter> t_im{};
+    if (fast) {
+        for (int k = 0; k < kQuarter; ++k) {
+            z_im[static_cast<std::size_t>(k)] = -z_im[static_cast<std::size_t>(k)];
+        }
+        internal::fft_radix2_forward<static_cast<std::size_t>(kQuarter)>(
+            fast_mdct_tables<512>().fft, z_re, z_im);
+        for (int n = 0; n < kQuarter; ++n) {
+            t_re[static_cast<std::size_t>(n)] = z_re[static_cast<std::size_t>(n)];
+            t_im[static_cast<std::size_t>(n)] = -z_im[static_cast<std::size_t>(n)];
+        }
+    } else {
+        const auto& s3 = inner_sum_table();
+        for (int n = 0; n < kQuarter; ++n) {
+            double re = 0.0;
+            double im = 0.0;
+            const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
+            const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
+            for (int k = 0; k < kQuarter; ++k) {
+                const double c = row_c[static_cast<std::size_t>(k)];
+                const double s = row_s[static_cast<std::size_t>(k)];
+                re += z_re[static_cast<std::size_t>(k)] * c -
+                      z_im[static_cast<std::size_t>(k)] * s;
+                im += z_re[static_cast<std::size_t>(k)] * s +
+                      z_im[static_cast<std::size_t>(k)] * c;
+            }
+            t_re[static_cast<std::size_t>(n)] = re;
+            t_im[static_cast<std::size_t>(n)] = im;
+        }
+    }
+
+    // Step 4: post-transform complex multiply. y[n] = z[n] * (xcos1[n] + j*xsin1[n])
+    std::array<double, kQuarter> y_re{};
+    std::array<double, kQuarter> y_im{};
+    for (int n = 0; n < kQuarter; ++n) {
+        const double c = tw.cos1[static_cast<std::size_t>(n)];
+        const double s = tw.sin1[static_cast<std::size_t>(n)];
+        y_re[static_cast<std::size_t>(n)] =
+            t_re[static_cast<std::size_t>(n)] * c - t_im[static_cast<std::size_t>(n)] * s;
+        y_im[static_cast<std::size_t>(n)] =
+            t_im[static_cast<std::size_t>(n)] * c + t_re[static_cast<std::size_t>(n)] * s;
+    }
+
+    // Step 5: windowing and de-interleaving, transcribed field-for-field.
+    const auto& w = kAnalysisWindow;
+    const auto yr = [&](int i) { return y_re[static_cast<std::size_t>(i)]; };
+    const auto yi = [&](int i) { return y_im[static_cast<std::size_t>(i)]; };
+    for (int n = 0; n < kEighth; ++n) {
+        x[static_cast<std::size_t>(2 * n)] = -yi(kEighth + n) * w[static_cast<std::size_t>(2 * n)];
+        x[static_cast<std::size_t>(2 * n + 1)] =
+            yr(kEighth - n - 1) * w[static_cast<std::size_t>(2 * n + 1)];
+        x[static_cast<std::size_t>(kQuarter + 2 * n)] =
+            -yr(n) * w[static_cast<std::size_t>(kQuarter + 2 * n)];
+        x[static_cast<std::size_t>(kQuarter + 2 * n + 1)] =
+            yi(kQuarter - n - 1) * w[static_cast<std::size_t>(kQuarter + 2 * n + 1)];
+        x[static_cast<std::size_t>(kN / 2 + 2 * n)] =
+            -yr(kEighth + n) * w[static_cast<std::size_t>(kN / 2 - 2 * n - 1)];
+        x[static_cast<std::size_t>(kN / 2 + 2 * n + 1)] =
+            yi(kEighth - n - 1) * w[static_cast<std::size_t>(kN / 2 - 2 * n - 2)];
+        x[static_cast<std::size_t>(3 * kN / 4 + 2 * n)] =
+            yi(n) * w[static_cast<std::size_t>(kQuarter - 2 * n - 1)];
+        x[static_cast<std::size_t>(3 * kN / 4 + 2 * n + 1)] =
+            -yr(kQuarter - n - 1) * w[static_cast<std::size_t>(kQuarter - 2 * n - 2)];
+    }
+}
+
+void imdct256_pair_windowed(std::span<const double, 256> coeffs, std::span<double, 512> x,
+                            bool fast) {
+    const auto& tw = twiddles2();
+    constexpr int kQuarter = kN / 4;  // 128
+    constexpr int kEighth = kN / 8;   // 64
+
+    // Step 1: de-interleave the 256 coefficients into the two half-block sets.
+    std::array<double, kQuarter> x1{};
+    std::array<double, kQuarter> x2{};
+    for (int k = 0; k < kQuarter; ++k) {
+        x1[static_cast<std::size_t>(k)] = coeffs[static_cast<std::size_t>(2 * k)];
+        x2[static_cast<std::size_t>(k)] = coeffs[static_cast<std::size_t>(2 * k + 1)];
+    }
+
+    // Step 2: pre-IFFT complex multiply.
+    // Z1[k] = (X1[N/4-2k-1] + j*X1[2k]) * (xcos2[k] + j*xsin2[k]), likewise Z2.
+    std::array<double, kEighth> z1_re{};
+    std::array<double, kEighth> z1_im{};
+    std::array<double, kEighth> z2_re{};
+    std::array<double, kEighth> z2_im{};
+    for (int k = 0; k < kEighth; ++k) {
+        const double c = tw.cos2[static_cast<std::size_t>(k)];
+        const double s = tw.sin2[static_cast<std::size_t>(k)];
+        const double a1 = x1[static_cast<std::size_t>(kQuarter - 2 * k - 1)];
+        const double b1 = x1[static_cast<std::size_t>(2 * k)];
+        z1_re[static_cast<std::size_t>(k)] = a1 * c - b1 * s;
+        z1_im[static_cast<std::size_t>(k)] = b1 * c + a1 * s;
+        const double a2 = x2[static_cast<std::size_t>(kQuarter - 2 * k - 1)];
+        const double b2 = x2[static_cast<std::size_t>(2 * k)];
+        z2_re[static_cast<std::size_t>(k)] = a2 * c - b2 * s;
+        z2_im[static_cast<std::size_t>(k)] = b2 * c + a2 * s;
+    }
+
+    // Step 3: two independent N/8-point complex "IFFT" sums, unscaled. Same
+    // inverse-DFT identity as the long transform's step 3 (see
+    // imdct512_windowed): the fast path runs conj(FFT(conj(Z))) through the
+    // P = 64 radix-2 tables the short forward folds already own
+    // (fast_mdct_tables<256>().fft), once per half-block set; the direct
+    // branch keeps the spec's own sum and inner_sum_pair_table()'s 64 KiB
+    // matrix stays a lazily-built oracle.
+    std::array<double, kEighth> t1_re{};
+    std::array<double, kEighth> t1_im{};
+    std::array<double, kEighth> t2_re{};
+    std::array<double, kEighth> t2_im{};
+    if (fast) {
+        const auto& fft = fast_mdct_tables<256>().fft;
+        for (int k = 0; k < kEighth; ++k) {
+            z1_im[static_cast<std::size_t>(k)] = -z1_im[static_cast<std::size_t>(k)];
+            z2_im[static_cast<std::size_t>(k)] = -z2_im[static_cast<std::size_t>(k)];
+        }
+        internal::fft_radix2_forward<static_cast<std::size_t>(kEighth)>(fft, z1_re, z1_im);
+        internal::fft_radix2_forward<static_cast<std::size_t>(kEighth)>(fft, z2_re, z2_im);
+        for (int n = 0; n < kEighth; ++n) {
+            t1_re[static_cast<std::size_t>(n)] = z1_re[static_cast<std::size_t>(n)];
+            t1_im[static_cast<std::size_t>(n)] = -z1_im[static_cast<std::size_t>(n)];
+            t2_re[static_cast<std::size_t>(n)] = z2_re[static_cast<std::size_t>(n)];
+            t2_im[static_cast<std::size_t>(n)] = -z2_im[static_cast<std::size_t>(n)];
+        }
+    } else {
+        const auto& s3 = inner_sum_pair_table();
+        for (int n = 0; n < kEighth; ++n) {
+            double re1 = 0.0;
+            double im1 = 0.0;
+            double re2 = 0.0;
+            double im2 = 0.0;
+            const auto& row_c = s3.cos[static_cast<std::size_t>(n)];
+            const auto& row_s = s3.sin[static_cast<std::size_t>(n)];
+            for (int k = 0; k < kEighth; ++k) {
+                const double c = row_c[static_cast<std::size_t>(k)];
+                const double s = row_s[static_cast<std::size_t>(k)];
+                re1 += z1_re[static_cast<std::size_t>(k)] * c -
+                       z1_im[static_cast<std::size_t>(k)] * s;
+                im1 += z1_re[static_cast<std::size_t>(k)] * s +
+                       z1_im[static_cast<std::size_t>(k)] * c;
+                re2 += z2_re[static_cast<std::size_t>(k)] * c -
+                       z2_im[static_cast<std::size_t>(k)] * s;
+                im2 += z2_re[static_cast<std::size_t>(k)] * s +
+                       z2_im[static_cast<std::size_t>(k)] * c;
+            }
+            t1_re[static_cast<std::size_t>(n)] = re1;
+            t1_im[static_cast<std::size_t>(n)] = im1;
+            t2_re[static_cast<std::size_t>(n)] = re2;
+            t2_im[static_cast<std::size_t>(n)] = im2;
+        }
+    }
+
+    // Step 4: post-IFFT complex multiply. y1[n] = z1[n] * (xcos2[n] + j*xsin2[n]).
+    std::array<double, kEighth> y1_re{};
+    std::array<double, kEighth> y1_im{};
+    std::array<double, kEighth> y2_re{};
+    std::array<double, kEighth> y2_im{};
+    for (int n = 0; n < kEighth; ++n) {
+        const double c = tw.cos2[static_cast<std::size_t>(n)];
+        const double s = tw.sin2[static_cast<std::size_t>(n)];
+        y1_re[static_cast<std::size_t>(n)] =
+            t1_re[static_cast<std::size_t>(n)] * c - t1_im[static_cast<std::size_t>(n)] * s;
+        y1_im[static_cast<std::size_t>(n)] =
+            t1_im[static_cast<std::size_t>(n)] * c + t1_re[static_cast<std::size_t>(n)] * s;
+        y2_re[static_cast<std::size_t>(n)] =
+            t2_re[static_cast<std::size_t>(n)] * c - t2_im[static_cast<std::size_t>(n)] * s;
+        y2_im[static_cast<std::size_t>(n)] =
+            t2_im[static_cast<std::size_t>(n)] * c + t2_re[static_cast<std::size_t>(n)] * s;
+    }
+
+    // Step 5: windowing and de-interleaving, transcribed field-for-field.
+    // N is 512 throughout (the spec's own note), so this reaches the same
+    // full x[0..511] the long path's step 5 does.
+    const auto& w = kAnalysisWindow;
+    const auto y1r = [&](int i) { return y1_re[static_cast<std::size_t>(i)]; };
+    const auto y1i = [&](int i) { return y1_im[static_cast<std::size_t>(i)]; };
+    const auto y2r = [&](int i) { return y2_re[static_cast<std::size_t>(i)]; };
+    const auto y2i = [&](int i) { return y2_im[static_cast<std::size_t>(i)]; };
+    for (int n = 0; n < kEighth; ++n) {
+        x[static_cast<std::size_t>(2 * n)] = -y1i(n) * w[static_cast<std::size_t>(2 * n)];
+        x[static_cast<std::size_t>(2 * n + 1)] =
+            y1r(kEighth - n - 1) * w[static_cast<std::size_t>(2 * n + 1)];
+        x[static_cast<std::size_t>(kQuarter + 2 * n)] =
+            -y1r(n) * w[static_cast<std::size_t>(kQuarter + 2 * n)];
+        x[static_cast<std::size_t>(kQuarter + 2 * n + 1)] =
+            y1i(kEighth - n - 1) * w[static_cast<std::size_t>(kQuarter + 2 * n + 1)];
+        x[static_cast<std::size_t>(kN / 2 + 2 * n)] =
+            -y2r(n) * w[static_cast<std::size_t>(kN / 2 - 2 * n - 1)];
+        x[static_cast<std::size_t>(kN / 2 + 2 * n + 1)] =
+            y2i(kEighth - n - 1) * w[static_cast<std::size_t>(kN / 2 - 2 * n - 2)];
+        x[static_cast<std::size_t>(3 * kN / 4 + 2 * n)] =
+            y2i(n) * w[static_cast<std::size_t>(kQuarter - 2 * n - 1)];
+        x[static_cast<std::size_t>(3 * kN / 4 + 2 * n + 1)] =
+            -y2r(kEighth - n - 1) * w[static_cast<std::size_t>(kQuarter - 2 * n - 2)];
+    }
+}
+
+}  // namespace ac3

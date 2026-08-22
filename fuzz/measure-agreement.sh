@@ -9,7 +9,7 @@
 #
 # This is how kMinAgreementDb got its value, not a guess: the first version
 # of this harness reused an existing 15 dB precedent from
-# scripts/verify-gold-reference.sh, and this sweep found two seeds
+# tools/checks/verify_gold_reference.sh, and this sweep found two seeds
 # comfortably under it even though neither is remotely broken (see
 # differential_oracle.hpp's own module comment for the bap-0-dither
 # reasoning). Re-run this after adding new seed content - a new corner of

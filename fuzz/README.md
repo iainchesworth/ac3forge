@@ -115,7 +115,7 @@ short version:
   error-concealment on a mutated (i.e. potentially malformed) frame can
   legitimately differ from this project's spec-strict decode - that proves
   nothing about which one is right, so it is treated as "no oracle for this
-  one," the same stance `scripts/run-codec-matrix.sh` already takes for the
+  one," the same stance `tools/ci/run_codec_matrix.sh` already takes for the
   Annex E tool combinations FFmpeg has no reading of at all (enhanced
   coupling, transient pre-noise processing, a second dependent substream/
   7.1.4 - see `docs/verification.md`'s "Where the oracles don't reach").
@@ -124,7 +124,7 @@ short version:
   clean, non-fuzzed stream actually measures at (`docs/verification.md`:
   float32-precision parity for the plain path, 98+ dB for coupling/spectral
   extension, 62-89 dB for AHT). It started from
-  `scripts/verify-gold-reference.sh`'s own `CPLBNDSTRCE0_MIN_SNR_DB=15`
+  `tools/checks/verify_gold_reference.sh`'s own `CPLBNDSTRCE0_MIN_SNR_DB=15`
   precedent - this project's one existing floor for "two decodes of a
   bitstream neither side controls" - and was then calibrated down to 6 dB
   after `fuzz/measure-agreement.sh` found committed seeds that legitimately
@@ -156,7 +156,7 @@ DECODER survive corrupt input", and it is the whole of what this directory
 covered for a long time. The mirror-image question - "does the ENCODER, driven
 across its own legal configuration space by adversarial but perfectly valid
 audio, ever emit a stream a decoder refuses" - is
-**`tools/fuzz_encoder_space.py`**, and nothing here asks it.
+**`tools/ci/fuzz_encoder_space.py`**, and nothing here asks it.
 
 It is not a libFuzzer target and not part of `fuzz/run.sh`: it drives the real
 `ac3cli`, so it needs the ordinary CLI build rather than this directory's
@@ -166,8 +166,14 @@ encoder configuration (layout, bitrate, coupling, DRC, heavy compression,
 dialnorm, downmix levels, forward-MDCT path), draws adversarial PCM built per
 256-sample BLOCK so a frame's character can change part-way through it,
 encodes, and then decodes the result with BOTH `ac3cli decode` and FFmpeg's
-strict decode - the same invocation `scripts/run-codec-matrix.sh` uses. A
-refusal from either fails the case.
+strict decode - the same invocation `tools/ci/run_codec_matrix.sh` uses. A
+refusal from either fails the case, with one arbitrated exception: when only
+FFmpeg's default invocation refuses and the same bytes decode cleanly under
+`-f ac3` with every error check kept, libavformat's container *guess* failed
+rather than the stream, and the case counts as "misprobed" instead - measured
+and explained in the script's note above `MIN_STREAM_BYTES` (large syncframes
+can lose FFmpeg's probe-window race to the MPEG-PS prober no matter how long
+the stream is).
 
 Why it exists: PR #186 fixed an encoder defect (`deltbaie == 0` means "retain
 the previous block's delta bit allocation", not "no delta") that produced
@@ -179,9 +185,10 @@ thoroughly would never have found it. The harness finds it in seconds; that
 was verified by reverting the fix and running it (see the file's own header).
 
 ```bash
-AC3CLI=build/config-linux-llvm/bin/ac3cli python3 tools/fuzz_encoder_space.py --seconds 120
-python3 tools/fuzz_encoder_space.py --check-envelope      # re-measure the rate floors it draws from
-python3 tools/fuzz_encoder_space.py --replay <case-seed>  # rerun one exact failing case
+AC3CLI=build/config-linux-llvm/bin/ac3cli python3 tools/ci/fuzz_encoder_space.py --seconds 120
+python3 tools/ci/fuzz_encoder_space.py --check-envelope      # re-measure the rate floors it draws from
+python3 tools/ci/fuzz_encoder_space.py --replay <case-seed>  # rerun one exact failing case
+python3 tools/ci/fuzz_encoder_space.py --regressions         # replay every recorded past failure
 ```
 
 Every case is a pure function of one 64-bit case seed, printed beside any

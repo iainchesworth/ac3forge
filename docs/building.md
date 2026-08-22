@@ -7,7 +7,7 @@ Every command here has been run on the configuration described under
 
 | | Version | Notes |
 |---|---|---|
-| A compiler | MSVC (VS 2026), clang-cl 21, GCC 15, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all seven platform/compiler legs are required, green CI (GCC 15 covers two of them — `linux-gcc` and `linux-gcc-arm64`; Clang 21 covers three — `linux-llvm`, `linux-llvm-arm64` and `macos-llvm`, each as a separate leg, though `macos-llvm` deliberately tracks Homebrew's unpinned `llvm` formula, currently also 21, rather than an exact pin) — see [Verified configuration](#verified-configuration). |
+| A compiler | MSVC (VS 2026), clang-cl 21, GCC 16, or Clang 21 | C++23. `std::expected`, `std::print` and deducing-`this` are all used. One [preset](#presets) per compiler; all seven platform/compiler legs are required, green CI (GCC 16 covers two of them — `linux-gcc` and `linux-gcc-arm64`; Clang 21 covers three — `linux-llvm`, `linux-llvm-arm64` and `macos-llvm`, each as a separate leg, though `macos-llvm` deliberately tracks Homebrew's unpinned `llvm` formula, currently also 21, rather than an exact pin) — see [Verified configuration](#verified-configuration). |
 | CMake | ≥ 3.28 | `cmake_minimum_required(VERSION 3.28...4.3)`. |
 | Ninja | any recent | The presets hard-code the Ninja generator. |
 | vcpkg | any recent | Supplies Catch2 (needed only when tests are on); with `-DVCPKG_MANIFEST_FEATURES=adm`, the Boost header libraries `AC3FORGE_BUILD_ADM=ON` needs; and with `-DVCPKG_MANIFEST_FEATURES=profiling`, the Tracy profiler `AC3FORGE_ENABLE_TRACY=ON` needs — see [Options](#options). None of the three is required for a default build. |
@@ -90,9 +90,9 @@ each with a matching `build-<platform>[-debug]` and `test-<platform>[-debug]` pr
 |---|---|---|---|---|
 | Windows | MSVC | `config-windows-msvc[-debug]` | `build-windows-msvc[-debug]` | `test-windows-msvc[-debug]` |
 | Windows | clang-cl | `config-windows-llvm[-debug]` | `build-windows-llvm[-debug]` | `test-windows-llvm[-debug]` |
-| Linux | GCC 15 | `config-linux-gcc[-debug]` | `build-linux-gcc[-debug]` | `test-linux-gcc[-debug]` |
+| Linux | GCC 16 | `config-linux-gcc[-debug]` | `build-linux-gcc[-debug]` | `test-linux-gcc[-debug]` |
 | Linux | Clang 21 | `config-linux-llvm[-debug]` | `build-linux-llvm[-debug]` | `test-linux-llvm[-debug]` |
-| Linux (arm64) | GCC 15 | `config-linux-gcc-arm64[-debug]` | `build-linux-gcc-arm64[-debug]` | `test-linux-gcc-arm64[-debug]` |
+| Linux (arm64) | GCC 16 | `config-linux-gcc-arm64[-debug]` | `build-linux-gcc-arm64[-debug]` | `test-linux-gcc-arm64[-debug]` |
 | Linux (arm64) | Clang 21 | `config-linux-llvm-arm64[-debug]` | `build-linux-llvm-arm64[-debug]` | `test-linux-llvm-arm64[-debug]` |
 | macOS | Homebrew LLVM | `config-macos-llvm[-debug]` | `build-macos-llvm[-debug]` | `test-macos-llvm[-debug]` |
 
@@ -115,13 +115,24 @@ There is a sixteenth trio, `config-linux-gcc-coverage` / `build-linux-gcc-covera
 `test-linux-gcc-coverage`, the same shape as the asan-ubsan one: an instrumented variant of
 `linux-gcc`, Debug-only, not a platform/compiler pair. It inherits a `coverage` fragment setting
 `AC3FORGE_ENABLE_COVERAGE=ON` (see `cmake/Coverage.cmake`, GCC/Clang's `--coverage` gcov
-instrumentation; other compilers just warn and skip it) plus `AC3FORGE_BUILD_CLI=OFF` and
-`AC3FORGE_BUILD_EXAMPLES=OFF` — `ac3cli` and the twenty `examples/` executables also link the
-now-instrumented `ac3::forge`, and turning them off avoids having to wire `ac3::coverage` into
-them too just to resolve its gcov runtime symbols at link time for targets nobody is measuring
-coverage of anyway. `.github/workflows/ci.yml`'s `coverage` job runs `gcovr` over `src/lib/*`
-after `ctest` and gates on line/branch percentage — see that job's own comment for the current
-thresholds and why they sit below the measured baseline.
+instrumentation; other compilers just warn and skip it), `AC3FORGE_BUILD_ADM=ON` with vcpkg's
+`adm` feature (so the opt-in ADM pair — `ac3adm` and its bridge — is measured alongside the
+always-on seven), plus `AC3FORGE_BUILD_CLI=OFF` and `AC3FORGE_BUILD_EXAMPLES=OFF` — purely a
+build-time saving: `ac3cli` and the `examples/` executables would link fine against the
+instrumented libraries (the gcov runtime propagates to consumers automatically, see
+`cmake/Coverage.cmake`), but the report is filtered to the library components, so building them
+instrumented buys nothing. After `ctest`,
+`tools/checks/coverage_report.sh` (the same script `.github/workflows/ci.yml`'s `coverage` job runs)
+makes one `gcovr` extraction pass over every `src/` library component and then gates line *and*
+branch coverage per component — see the script's own floor table for the current thresholds and
+the measured baseline each was calibrated against:
+
+```bash
+cmake --preset config-linux-gcc-coverage
+cmake --build --preset build-linux-gcc-coverage -- -k 0
+ctest --preset test-linux-gcc-coverage -LE Performance
+./tools/checks/coverage_report.sh -g gcov-15
+```
 
 There is a seventeenth trio, `config-linux-llvm-shared` / `build-linux-llvm-shared` /
 `test-linux-llvm-shared`, same shape again: an instrumented variant of `linux-llvm`, Debug-only.
@@ -205,7 +216,7 @@ without the preset and pass the generator and build type by hand.
 ## Building on Linux
 
 `config-linux-gcc` and `config-linux-llvm` (each with a `-debug` variant, same as the Windows
-presets) are GCC 15 and Clang 21 respectively. They do **not** share the `debug`/`release` bare
+presets) are GCC 16 and Clang 21 respectively. They do **not** share the `debug`/`release` bare
 names used elsewhere in this document — there is no `cmake --preset debug` on any platform; see
 [Presets](#presets) above.
 
@@ -302,12 +313,12 @@ Both dependencies are **optional and detected**. Configure reports which one it 
 ```
 -- PipeWire 1.6.2: live capture and monitor playback enabled; IEC 61937 passthrough negotiates
    for real but needs a compressed codec enabled on the target node by the session manager first
-   - see src/platform/pipewire/passthrough.cpp
+   - see src/audio/src/backend/pipewire/passthrough.cpp
 --   Audio backend  : pipewire
 ```
 
 Without either set of headers, configure succeeds anyway and says so; the build then selects
-`src/audio/src/platform/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
+`src/audio/src/backend/posix/`, whose entry points all return `kNoBackend`, and `ac3cli` marks
 the affected commands `UNAVAILABLE HERE` in its usage rather than pretending they exist. Pass
 `-DAC3FORGE_WITH_ALSA=ON` and/or `-DAC3FORGE_WITH_PIPEWIRE=ON` to turn a missing set of headers
 into a configure error instead, which is what a packaging build wants.
@@ -328,7 +339,7 @@ extra configuration.
 
 PipeWire has its own real, current, native mechanism for the same thing —
 `SPA_MEDIA_SUBTYPE_iec958`, `spa_format_audio_iec958_build()`, `PW_STREAM_FLAG_EXCLUSIVE` — not
-aspirational API surface; `src/platform/pipewire/passthrough.cpp`'s own header comment cites a
+aspirational API surface; `src/audio/src/backend/pipewire/passthrough.cpp`'s own header comment cites a
 real shipped client (Kodi's PipeWire passthrough support) that negotiates exactly this way. What
 it does not have is ALSA's "just works": a PipeWire sink only offers a compressed codec once its
 `iec958Codecs` control has been populated by the session manager (a WirePlumber ALSA-monitor
@@ -512,9 +523,9 @@ The Linux instructions were run on:
 
 Result: configure, build and `ctest` all clean on both compilers, GUI and ALSA both included.
 The base suite is `ac3tests` and `ac3perf`'s Catch2 cases plus one ctest entry per example
-program; `AC3FORGE_WITH_ALSA`'s `tests/platform/alsa/` adds 14 entries (or, on a build that
-selected pipewire/ instead, `tests/platform/pipewire/` adds 5), and the GUI's Qt Quick
-Test harness (`ac3gui_qmltests`, `src/gui/tests/CMakeLists.txt`) adds one more — unlike every
+program; `AC3FORGE_WITH_ALSA`'s `tests/backend/alsa/` adds 14 entries (or, on a build that
+selected pipewire/ instead, `tests/backend/pipewire/` adds 5), and the GUI's Qt Quick
+Test harness (`ac3gui_qmltests`, `apps/gui/tests/CMakeLists.txt`) adds one more — unlike every
 other GUI-related target, that one harness *does* register its own `ctest` entry, gated on both
 `AC3FORGE_BUILD_GUI` and `AC3FORGE_BUILD_TESTS`. A Linux build with neither ALSA nor the GUI
 runs the base suite; with the GUI on and ALSA off it matches Windows exactly. `ac3gui --smoke`
@@ -523,7 +534,8 @@ real QML channel meters. See [Linux audio](#linux-audio) for what the ALSA verif
 and did not (real hardware), prove.
 
 linux-gcc, linux-llvm, linux-gcc-arm64, linux-llvm-arm64, linux-llvm-asan-ubsan, macos-llvm,
-static-analysis (clang-tidy), coverage (gcovr over `src/lib`, via `config-linux-gcc-coverage`),
+static-analysis (clang-tidy), coverage (`tools/checks/coverage_report.sh` over every `src/` library
+component, via `config-linux-gcc-coverage`),
 adm-validate (the opt-in ADM module) and ffmpeg-validate all run on every push, as does
 build-android (the Shield app's debug APK) — the four Linux build legs install the same
 Qt6/ALSA packages and build/smoke-test the GUI too. ffmpeg-validate is a
@@ -536,9 +548,11 @@ combination produces a *structurally correct* stream at all, plus a numeric fide
 the Annex E tool combinations the one fixed gold-reference sample does not itself exercise. No
 leg remains experimental.
 
-The coverage job's own gate — 81.3% line / 72.0% branch measured on a real GitHub Actions run,
-80%/70% required — uses the same GCC 15 pin as the other Linux legs; see the coverage job's own
-comment in `ci.yml` for the thresholds and why they sit below the measured baseline.
+The coverage job gates line and branch coverage per library component, not as one blended
+number, using the same GCC 16 pin as the other Linux legs; the floor table, the measurement each
+floor was calibrated against, and why two components (`src/audio`'s device paths, `src/capi`'s
+E-AC-3 surface) are honestly floored low all live in `tools/checks/coverage_report.sh`, with the
+calibration history in the coverage job's own comment in `ci.yml`.
 
 No macOS host exists for this project, so `config-macos-llvm`/`config-macos-llvm-debug` are only
 ever exercised by CI (`macos-latest`, Apple Silicon) — never locally. That CI leg is green:
@@ -547,7 +561,7 @@ configure, build and `ctest` all clean, using a Homebrew-installed LLVM
 a version-pinned one — Homebrew's core `llvm` formula has no versioned sibling the way
 apt.llvm.org or the official Windows installer do, so unlike the other LLVM legs this one tracks
 whatever Homebrew currently ships. The gold-reference correctness gate
-(`scripts/verify-gold-reference.sh` — see [Gold-reference correctness gate](#gold-reference-correctness-gate)
+(`tools/checks/verify_gold_reference.sh` — see [Gold-reference correctness gate](#gold-reference-correctness-gate)
 below) also passes: real SNR numbers from that CI run were 61.81/61.82 dB on macOS, against
 67.84/67.82 dB on Linux and Windows for the same material - a real but modest cross-compiler
 floating-point difference, comfortably clear of the 30 dB gate. `macos-llvm` now builds the GUI
@@ -556,17 +570,17 @@ too (Homebrew's `qt` formula — see [GUI on macOS](platforms/macos.md#gui-on-ma
 ctest entries total, 100% passing, `ac3gui_qmltests` itself in 39.74s (56.81s for the whole
 suite) — the first time that number has existed for macOS at all, so there is no prior baseline
 to compare it against the way the ~15s Windows number has one. Getting there needed two real
-fixes, not just turning the option on: `QSG_RENDER_LOOP=basic` (`src/gui/tests/CMakeLists.txt`,
+fixes, not just turning the option on: `QSG_RENDER_LOOP=basic` (`apps/gui/tests/CMakeLists.txt`,
 `APPLE` only) for a Qt Quick threaded-render-loop deadlock that hung the suite outright before a
 single test ran, and forcing the `Fusion` style in `qml_test_main.cpp` — matching what `main.cpp` already does —
 for a second, narrower hang in a native `ComboBox` populated by real capture-device data once a
 test entered live-session mode: the same native-style-under-offscreen fragility a comment in
-`src/gui/qml/Main.qml` already documents one earlier instance of, on Windows, in a different
+`apps/gui/qml/Main.qml` already documents one earlier instance of, on Windows, in a different
 control (a `Repeater`'s per-device `Button`, worked around there directly in QML rather than at
-the style level). See `src/gui/tests/CMakeLists.txt` and `qml_test_main.cpp` for the full detail
+the style level). See `apps/gui/tests/CMakeLists.txt` and `qml_test_main.cpp` for the full detail
 on both macOS fixes.
 
-`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/platform/macos/`,
+`src/audio/CMakeLists.txt` selects a real CoreAudio backend on macOS (`src/audio/src/backend/macos/`,
 built on the Audio HAL — `AudioObjectID`/`AudioDeviceIOProc` — the same layer WASAPI and ALSA
 occupy on their own platforms), not the no-backend stub it fell back to before. `AC3FORGE_BUILD_GUI`
 still defaults off there (`macos-llvm` opts it on in CI the same way the Linux legs do — see
@@ -589,16 +603,16 @@ Pi OS, and so on).
 
 ## Gold-reference correctness gate
 
-`scripts/verify-gold-reference.sh` (invoked in CI on every leg except linux-llvm-asan-ubsan,
+`tools/checks/verify_gold_reference.sh` (invoked in CI on every leg except linux-llvm-asan-ubsan,
 which stays diagnostic-only) is the first real implementation of the project's original
 validation-pyramid design (now [docs/verification.md](verification.md)), which had never been
 wired into CI before this: encode a fixed, checked-in 5.1 WAV
-(`tests/golden/audio/reference_51.wav`, synthesized once by `tools/gen_gold_reference_wav.py` —
+(`tests/golden/audio/reference_51.wav`, synthesized once by `tools/generators/gen_gold_reference_wav.py` —
 independent of this codec's own encoder/decoder, not bootstrapped from one of our own encodes),
 strict-decode the result with FFmpeg (`-err_detect crccheck+bitstream+buffer+explode`, checked
 via stderr content rather than exit code — confirmed locally that ffmpeg's own process exits 0
 even on a CRC mismatch), decode it again with ac3cli's own decoder, and assert the two decodes
-agree via `scripts/compare_wav.py`'s delay-compensated SNR (stdlib-only Python, no numpy — every
+agree via `tools/checks/compare_wav.py`'s delay-compensated SNR (stdlib-only Python, no numpy — every
 CI-hosted runner already ships Python 3, so this needs no new provisioning). The gate is
 perceptual/SNR-based rather than a bit-exact bitstream comparison deliberately: nothing in this
 project verifies that Homebrew LLVM, GCC and MSVC round the codec's floating-point
@@ -606,7 +620,7 @@ pipeline identically, and the real numbers above show they in fact do not, by a 
 measurable margin.
 
 This is a narrow, cross-platform *quality* check — one sample, two codecs, every OS — not a
-conformance sweep. `tools/check_matrix_coverage.py`, `tools/quality_race.py`'s `ci` mode and the
+conformance sweep. `tools/checks/check_matrix_coverage.py`, `tools/ci/quality_race.py`'s `ci` mode and the
 rest of the `ffmpeg-validate` CI leg (Linux-only, see [Verified configuration](#verified-configuration)
 above) cover the *correctness* question instead: does every layout, every Annex E tool token and
 every metadata option actually produce a structurally valid, spec-conformant stream, across the

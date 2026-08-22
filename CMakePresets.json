@@ -64,7 +64,7 @@
     {
       "name": "linux-gcc",
       "hidden": true,
-      "description": "Linux/GCC 15 toolchain selection. The GUI is off because a Qt kit is not assumed present, NOT because it cannot be built: cmake/FindQt6.cmake resolves Linux kits fine (distro packages land on CMake's own prefixes, and relocated / aqtinstall kits are searched under ~/Qt, /opt/Qt and friends), and ac3gui builds under both Linux presets and passes its headless --smoke run against Ubuntu 26.04's Qt 6.10. Add -DAC3FORGE_BUILD_GUI=ON on a machine that has Qt 6.5+; a preset that cannot find Qt should still say so by not asking for it rather than by failing to configure.",
+      "description": "Linux/GCC 16 toolchain selection. The GUI is off because a Qt kit is not assumed present, NOT because it cannot be built: cmake/FindQt6.cmake resolves Linux kits fine (distro packages land on CMake's own prefixes, and relocated / aqtinstall kits are searched under ~/Qt, /opt/Qt and friends), and ac3gui builds under both Linux presets and passes its headless --smoke run against Ubuntu 26.04's Qt 6.10. Add -DAC3FORGE_BUILD_GUI=ON on a machine that has Qt 6.5+; a preset that cannot find Qt should still say so by not asking for it rather than by failing to configure.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-linux-gcc",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.gcc.toolchain.cmake",
@@ -94,7 +94,7 @@
     {
       "name": "linux-gcc-arm64",
       "hidden": true,
-      "description": "Linux/GCC 15 toolchain selection, arm64 (Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu target). Same toolchain file as linux-gcc - cmake/toolchains/linux.gcc.toolchain.cmake already resolves aarch64 vs x86_64 from VCPKG_TARGET_ARCHITECTURE - only the vcpkg triplet differs. GUI off for the same reason as linux-gcc.",
+      "description": "Linux/GCC 16 toolchain selection, arm64 (Raspberry Pi 4/5 and any other aarch64 Debian/Ubuntu target). Same toolchain file as linux-gcc - cmake/toolchains/linux.gcc.toolchain.cmake already resolves aarch64 vs x86_64 from VCPKG_TARGET_ARCHITECTURE - only the vcpkg triplet differs. GUI off for the same reason as linux-gcc.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "arm64-linux-gcc",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux.gcc.toolchain.cmake",
@@ -124,7 +124,7 @@
     {
       "name": "macos-llvm",
       "hidden": true,
-      "description": "macOS (Apple Silicon)/Homebrew LLVM toolchain selection. Verified via CI only (this project has no local macOS host) - see docs/BUILDING.md's Verified configuration section. GUI off by default for the same reason as linux-gcc - not because it cannot be built, but because a Qt kit is not assumed present on every Mac. CI's macos-llvm leg installs Homebrew's qt formula and passes -DAC3FORGE_BUILD_GUI=ON, the same opt-in shape as the four Linux build legs.",
+      "description": "macOS (Apple Silicon)/Homebrew LLVM toolchain selection. Verified via CI only (this project has no local macOS host) - see docs/building.md's Verified configuration section. GUI off by default for the same reason as linux-gcc - not because it cannot be built, but because a Qt kit is not assumed present on every Mac. CI's macos-llvm leg installs Homebrew's qt formula and passes -DAC3FORGE_BUILD_GUI=ON, the same opt-in shape as the four Linux build legs.",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "arm64-macos-llvm",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/macos.llvm.toolchain.cmake",
@@ -151,7 +151,8 @@
         "AC3FORGE_BUILD_EXAMPLES": "OFF",
         "AC3FORGE_BUILD_MATROSKA": "OFF",
         "AC3FORGE_BUILD_MP4": "OFF",
-        "AC3FORGE_BUILD_MPEGTS": "OFF"
+        "AC3FORGE_BUILD_MPEGTS": "OFF",
+        "AC3FORGE_BUILD_CAPI": "OFF"
       }
     },
 
@@ -166,11 +167,13 @@
     {
       "name": "coverage",
       "hidden": true,
-      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over ac3::forge and ac3tests. CLI and examples are off: both link ac3::forge, and an instrumented library's gcov runtime symbols would otherwise need resolving on their link lines too for no coverage benefit, since gcovr's report is filtered to src/lib/.* anyway - see .github/workflows/ci.yml's coverage job.",
+      "description": "gcov source coverage instrumentation (cmake/Coverage.cmake) over every library component - ac3::forge, ac3::audio, ac3::signing, matroska/mp4/mpegts, the C API, and (via AC3FORGE_BUILD_ADM=ON plus vcpkg's 'adm' feature, the same pair ci.yml's adm-validate job passes) ac3adm/admbridge - plus ac3tests. CLI and examples are off purely to save build time: they would link fine (the gcov runtime propagates to consumers automatically, see cmake/Coverage.cmake), but tools/checks/coverage_report.sh filters the report to the library components, so building them instrumented buys nothing - see .github/workflows/ci.yml's coverage job.",
       "cacheVariables": {
         "AC3FORGE_ENABLE_COVERAGE": "ON",
         "AC3FORGE_BUILD_CLI": "OFF",
-        "AC3FORGE_BUILD_EXAMPLES": "OFF"
+        "AC3FORGE_BUILD_EXAMPLES": "OFF",
+        "AC3FORGE_BUILD_ADM": "ON",
+        "VCPKG_MANIFEST_FEATURES": "adm"
       }
     },
     {
@@ -369,109 +372,100 @@
 
   "testPresets": [
     {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
       "name": "test-windows-msvc",
       "configurePreset": "config-windows-msvc",
       "displayName": "Windows MSVC Release Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-windows-msvc-debug",
       "configurePreset": "config-windows-msvc-debug",
       "displayName": "Windows MSVC Debug Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-windows-llvm",
       "configurePreset": "config-windows-llvm",
       "displayName": "Windows LLVM Release Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-windows-llvm-debug",
       "configurePreset": "config-windows-llvm-debug",
       "displayName": "Windows LLVM Debug Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-gcc",
       "configurePreset": "config-linux-gcc",
       "displayName": "Linux GCC Release Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-gcc-debug",
       "configurePreset": "config-linux-gcc-debug",
       "displayName": "Linux GCC Debug Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-llvm",
       "configurePreset": "config-linux-llvm",
       "displayName": "Linux LLVM Release Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-llvm-debug",
       "configurePreset": "config-linux-llvm-debug",
       "displayName": "Linux LLVM Debug Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-gcc-arm64",
       "configurePreset": "config-linux-gcc-arm64",
       "displayName": "Linux GCC Release Tests (arm64)",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-gcc-arm64-debug",
       "configurePreset": "config-linux-gcc-arm64-debug",
       "displayName": "Linux GCC Debug Tests (arm64)",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-llvm-arm64",
       "configurePreset": "config-linux-llvm-arm64",
       "displayName": "Linux LLVM Release Tests (arm64)",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-llvm-arm64-debug",
       "configurePreset": "config-linux-llvm-arm64-debug",
       "displayName": "Linux LLVM Debug Tests (arm64)",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-macos-llvm",
       "configurePreset": "config-macos-llvm",
       "displayName": "macOS LLVM Release Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-macos-llvm-debug",
       "configurePreset": "config-macos-llvm-debug",
       "displayName": "macOS LLVM Debug Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-llvm-asan-ubsan",
       "configurePreset": "config-linux-llvm-asan-ubsan",
       "displayName": "Linux LLVM ASan+UBSan Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false },
+      "inherits": "test-base",
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=1",
         "UBSAN_OPTIONS": "print_stacktrace=1"
@@ -486,60 +480,63 @@
       "name": "test-linux-gcc-coverage",
       "configurePreset": "config-linux-gcc-coverage",
       "displayName": "Linux GCC Coverage Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     },
     {
       "name": "test-linux-llvm-shared",
       "configurePreset": "config-linux-llvm-shared",
       "displayName": "Linux LLVM Shared Tests",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "inherits": "test-base"
     }
   ],
 
   "packagePresets": [
     {
+      "name": "package-base",
+      "hidden": true,
+      "packageDirectory": "${sourceDir}/packages"
+    },
+    {
       "name": "pack-windows-msvc",
       "displayName": "Windows MSVC Package",
       "configurePreset": "config-windows-msvc",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     },
     {
       "name": "pack-windows-llvm",
       "displayName": "Windows LLVM Package",
       "configurePreset": "config-windows-llvm",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     },
     {
       "name": "pack-linux-gcc",
       "displayName": "Linux GCC Package",
       "configurePreset": "config-linux-gcc",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     },
     {
       "name": "pack-linux-llvm",
       "displayName": "Linux LLVM Package",
       "configurePreset": "config-linux-llvm",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     },
     {
       "name": "pack-linux-gcc-arm64",
       "displayName": "Linux GCC Package (arm64)",
       "configurePreset": "config-linux-gcc-arm64",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     },
     {
       "name": "pack-linux-llvm-arm64",
       "displayName": "Linux LLVM Package (arm64)",
       "configurePreset": "config-linux-llvm-arm64",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     },
     {
       "name": "pack-macos-llvm",
       "displayName": "macOS LLVM Package",
       "configurePreset": "config-macos-llvm",
-      "packageDirectory": "${sourceDir}/packages"
+      "inherits": "package-base"
     }
   ],
 

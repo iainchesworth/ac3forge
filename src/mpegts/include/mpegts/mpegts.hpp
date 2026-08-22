@@ -94,9 +94,61 @@ struct MuxOptions {
 };
 
 // Mux access units into a complete .ts, returned as bytes. No file I/O here,
-// so this stays testable without touching a disk.
+// so this stays testable without touching a disk. Access units arrive as
+// views (matroska::mux's own reasoning); the vector-list overload below
+// forwards for owned lists.
+[[nodiscard]] MPEGTS_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
+    const AudioTrack& track, std::span<const std::span<const std::byte>> frames,
+    const MuxOptions& options = {});
+
 [[nodiscard]] MPEGTS_EXPORT std::expected<std::vector<std::byte>, MuxError> mux(
     const AudioTrack& track, std::span<const std::vector<std::byte>> frames,
     const MuxOptions& options = {});
+
+// Incrementally muxes access units into a transport stream as they arrive -
+// matroska::Writer's sibling, for a session whose length is not known up
+// front. A transport stream is the born-streamable container: the only
+// state that crosses access units is three continuity counters and the
+// index the 90 kHz clock derives from, so the bytes push() hands back,
+// written in order, are IDENTICAL to what mux() produces for the same
+// frames - that equality is this class's contract and its test.
+//
+// No file I/O, matching matroska::Writer: push() hands back bytes for the
+// caller to write. Two shape differences from the Matroska sibling, both
+// forced by the format itself: there is no header() (PSI - PAT and PMT -
+// repeats every options.psi_repeat_every_au access units and rides inside
+// push()'s own bytes, exactly where mux() puts it), and finalize() always
+// returns empty (a transport stream has no trailer and no length field to
+// patch) - it exists so a caller can treat the two writers uniformly.
+class MPEGTS_EXPORT Writer {
+   public:
+    // Validates the track and options the same way mux() does.
+    [[nodiscard]] static std::expected<Writer, MuxError> create(const AudioTrack& track,
+                                                                 const MuxOptions& options = {});
+
+    // The TS packets carrying this access unit (PSI first, on the repeat
+    // cadence) - never empty on success. Write them in order as they come.
+    [[nodiscard]] std::expected<std::vector<std::byte>, MuxError> push(
+        std::span<const std::byte> access_unit);
+
+    // Always empty - see the class comment. Safe to call exactly once, or
+    // never; nothing is held back.
+    [[nodiscard]] std::vector<std::byte> finalize();
+
+    [[nodiscard]] std::size_t frames_written() const { return index_; }
+
+   private:
+    Writer(AudioTrack track, MuxOptions options, std::vector<std::byte> pat_section,
+           std::vector<std::byte> pmt_section);
+
+    AudioTrack track_;
+    MuxOptions options_;
+    std::vector<std::byte> pat_section_;
+    std::vector<std::byte> pmt_section_;
+    std::size_t index_ = 0;
+    std::uint8_t pat_cc_ = 0;
+    std::uint8_t pmt_cc_ = 0;
+    std::uint8_t audio_cc_ = 0;
+};
 
 }  // namespace mpegts

@@ -13,28 +13,27 @@
 # Staged here (packaging/homebrew/Casks/ac3gui.rb), the same way the Formula
 # was, for validation against a real release before being copied into a
 # personal tap (homebrew-ac3forge) as Casks/ac3gui.rb - see
-# packaging/homebrew/README.md.
+# packaging/homebrew/README.md. Copying it into the tap and pushing there is
+# a separate, manual step - not done as part of landing this file.
 #
-# PENDING A REAL RELEASE - version/sha256 below are placeholders, not real
-# values. No tagged release has ever contained a macOS ac3gui build: the CI
-# change that makes the `macos-llvm` leg build the GUI at all
-# (.github/workflows/_build.yml, AC3FORGE_BUILD_GUI=ON via Homebrew's `qt`
-# formula - see docs/platforms/macos.md#gui-on-macos) lands in the same
-# change as this file. The first `vX.Y.Z` tag cut afterwards is the first
-# release whose ac3forge-*-Darwin.dmg actually contains ac3gui.app, and is
-# what this file must be updated to point at - same per-release update shape
-# "Every release tag" in docs/releasing.md#homebrew-formula-and-cask already
-# documents for the sibling Formula. Do not copy this file into the tap
-# before that update happens.
+# v0.8.0-beta.2 is the first tagged release whose macos-llvm leg builds
+# AC3FORGE_BUILD_GUI=ON (see docs/platforms/macos.md#gui-on-macos), so it is
+# the first release whose ac3forge-*-Darwin.dmg actually contains
+# ac3gui.app - version/sha256 below are real values pinned from that
+# release, not placeholders. **Every release tag** after this one still
+# needs the same follow-up update "Every release tag" in
+# docs/releasing.md#homebrew-formula-and-cask already documents for the
+# sibling Formula: bump version, recompute sha256 from that release's own
+# ac3forge-*-Darwin.dmg, validate locally, then copy into the tap.
 cask "ac3gui" do
-  version "0.0.0"
-  # :no_check is a placeholder, not a real security posture - see the header
-  # comment above. A real Cask copied into the tap must pin the actual
-  # sha256 of that release's ac3forge-<version>-Darwin.dmg (the same
-  # CPACK_PACKAGE_CHECKSUM SHA512 also computed in cmake/Packaging.cmake and
-  # published alongside it, just a different digest algorithm - Homebrew
-  # Casks pin sha256).
-  sha256 :no_check
+  version "0.8.0-beta.2"
+  # Pinned from v0.8.0-beta.2's actual release asset (GitHub's own reported
+  # digest for ac3forge-0.8.0-Darwin.dmg - the same CPACK_PACKAGE_CHECKSUM
+  # SHA512 cmake/Packaging.cmake also computes and publishes alongside it,
+  # just a different digest algorithm; Homebrew Casks pin sha256). If
+  # `brew install` reports a mismatch, trust brew's reported hash over this
+  # one and update it here.
+  sha256 "1a18bac9ffecc1e5e57ea665d8ee1b307b950d3df1b35847db54052c82012bec"
 
   # CPack's dmg filename carries only MAJOR.MINOR.PATCH
   # (cmake/Packaging.cmake's CPACK_PACKAGE_FILE_NAME), dropping any

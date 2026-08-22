@@ -43,6 +43,36 @@ This is the constraint the whole project rests on. Breaking it makes the code un
 
 If you cannot cite where something came from, it does not go in.
 
+## Repository layout
+
+**`src/` is the installable library; `apps/` consumes it, never the reverse.** `src/forge` is
+the codec itself; `apps/{cli,gui,wasm,android}` are its consumers. Nothing under `src/` may
+depend on anything under `apps/`.
+
+**The `ac3/` header prefix marks a dependency on `ac3::forge`, not just anything codec-adjacent.**
+A module installs its public headers under `include/ac3/<name>/` exactly when it depends on or
+extends `ac3::forge`'s own model: `forge` itself (`ac3/core`, `ac3/encoder`, ...), `admbridge`
+(`ac3/admbridge`), `audio` (`ac3/audio`), `signing` (`ac3/signing`). A bare `include/<name>/`
+(no `ac3/` prefix) marks a module as deliberately codec-blind: `ac3adm` (ADM/BW64 file parsing),
+`matroska`, `mp4`, `mpegts` (container muxing) — none of these know AC-3, E-AC-3 or Atmos exist,
+and should stay that way.
+
+The one deliberate exception is `capi`: it installs under `include/ac3forge_c/`, not `ac3/`,
+even though it depends on the codec directly (it wraps `ac3::forge_static`). The `ac3/` tree is
+a C++ namespace; `capi` is a C-callable surface, and a C or non-C++ consumer has no reason to
+see, or accidentally `#include`, a C++ header. Don't read "not under `ac3/`" as "codec-blind"
+here — it's a different axis (language surface, not dependency) that happens to look similar.
+
+**One subdirectory per platform audio backend, selected by CMake, never `#ifdef`.**
+`src/audio/src/backend/{alsa,pipewire,android,macos,posix,windows}` — adding a backend means a
+new directory and a new CMake guard, not a new preprocessor branch. There are zero
+`#ifdef`-based platform branches anywhere in `src/`; keep it that way.
+
+**A leading underscore on a workflow file means "reusable, not directly triggered."**
+`.github/workflows/_build.yml` and `_toolchain-versions.yml` are `workflow_call` targets invoked
+by `ci.yml` and `release.yml`; every other workflow file responds to a real GitHub event
+(`pull_request`, `push`, a schedule) on its own.
+
 ## Code conventions
 
 **C++23, and use it.** `std::expected` for recoverable failure, `std::span` for borrowed
@@ -143,21 +173,21 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
    different questions:
 
    - **`ffmpeg-validate`** (Linux-only, this job): *correctness* across the full option space.
-     `scripts/run-codec-matrix.sh`'s FFmpeg strict-decode checks for conformance,
-     `tools/check_drc.py` and `tools/check_coupling.py`/`check_coupling_level.py` for metadata
-     that only a discriminating decode can confirm, and `tools/quality_race.py ci` for a numeric
+     `tools/ci/run_codec_matrix.sh`'s FFmpeg strict-decode checks for conformance,
+     `tools/checks/check_drc.py` and `tools/checks/check_coupling.py`/`check_coupling_level.py` for metadata
+     that only a discriminating decode can confirm, and `tools/ci/quality_race.py ci` for a numeric
      SNR/LSD floor per E-AC-3 tool variant. Running any of these locally needs `ffmpeg` on `PATH`
      and, for the Python ones, `AC3CLI` (or `--cli`) pointed at your build's `ac3cli`.
-   - **The gold-reference gate** (`scripts/verify-gold-reference.sh`, every platform leg):
+   - **The gold-reference gate** (`tools/checks/verify_gold_reference.sh`, every platform leg):
      *quality* and cross-platform reproducibility on one fixed sample - does ac3cli's own decoder
      agree with FFmpeg's, by SNR, on every compiler this project builds with. See
      [docs/building.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/building.md#gold-reference-correctness-gate).
 
-   The same job also runs `tools/check_matrix_coverage.py`, which asks a different question: not
+   The same job also runs `tools/checks/check_matrix_coverage.py`, which asks a different question: not
    "is the output correct" but "does anything exercise this at all". It reads the CLI's own
    canonical option lists (its usage text, and the "unknown layout"/"unknown tool set" messages a
    bad argument hits) and fails if a layout, Annex E tool token or command the CLI accepts is
-   never exercised by `run-codec-matrix.sh`. Most of those are presence checks — the token has to
+   never exercised by `run_codec_matrix.sh`. Most of those are presence checks — the token has to
    appear somewhere in the script — but Annex E tool tokens are read only from the tool sets the
    matrix actually encodes with, after a token that appeared only as an unrelated option's *value*
    produced a false pass. So a new layout, tool token or command needs a matching matrix entry in
@@ -166,7 +196,7 @@ Ranked by how much they prove. Prefer the strongest one available for what you a
 
    Both of those walk a *hand-enumerated* list of command lines against one bootstrap tone, so
    neither has any notion of option *combinations* or of the input material. The same job's
-   `tools/fuzz_encoder_space.py` step covers what that leaves: random legal encoder
+   `tools/ci/fuzz_encoder_space.py` step covers what that leaves: random legal encoder
    configurations crossed with adversarial PCM whose character changes part-way through a frame,
    every resulting stream held against both decoders. It exists because the `deltbaie` defect
    (`deltbaie = 0` means "retain", not "no delta") produced streams both decoders reject and
@@ -194,7 +224,7 @@ If you add a capability or find a new limitation, the tables in
 does" / "What it does not do") and, for oracle coverage specifically,
 [docs/verification.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/verification.md)
 are the authority and must be updated with it. README.md's own summary of the same material
-should stay a summary, not grow back into a second copy. [docs/project/history.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/project/history.md) is a
+should stay a summary, not grow back into a second copy. [docs/history.md](https://github.com/iainchesworthlabs/ac3forge/blob/main/docs/history.md) is a
 record of past work and is not maintained against the current state.
 
 ## Commits

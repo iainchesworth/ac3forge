@@ -6,8 +6,8 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
-      - "requirements-docs.in"
-      - "requirements-docs.txt"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
       - ".github/workflows/docs.yml"
       # Root files the site includes verbatim via pymdownx.snippets
       # (docs/contributing.md and docs/roadmap.md) - an edit to either must
@@ -15,14 +15,14 @@ on:
       - "CONTRIBUTING.md"
       - "ROADMAP.md"
       # The WASM decode demo the deploy job below rebuilds fresh and embeds
-      # at docs/wasm-demo.md - without these, a platform/wasm/ change on
+      # at docs/wasm-demo.md - without these, an apps/wasm/ change on
       # main would never trigger a redeploy at all, and the published demo
-      # would silently drift from source. src/lib/ is deliberately NOT
+      # would silently drift from source. src/forge/ is deliberately NOT
       # listed: an ordinary codec change touches it constantly and has no
       # reason to redeploy the docs site on its own; a change that also
-      # needs the demo republished goes through platform/wasm/ (or one of
+      # needs the demo republished goes through apps/wasm/ (or one of
       # the paths below) too.
-      - "platform/wasm/**"
+      - "apps/wasm/**"
       - "CMakeLists.txt"
       - "CMakePresets.json"
       - "cmake/toolchains/wasm.emscripten.toolchain.cmake"
@@ -32,12 +32,12 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
-      - "requirements-docs.in"
-      - "requirements-docs.txt"
+      - "requirements/requirements-docs.in"
+      - "requirements/requirements-docs.txt"
       - ".github/workflows/docs.yml"
       - "CONTRIBUTING.md"
       - "ROADMAP.md"
-      - "platform/wasm/**"
+      - "apps/wasm/**"
       - "CMakeLists.txt"
       - "CMakePresets.json"
       - "cmake/toolchains/wasm.emscripten.toolchain.cmake"
@@ -60,7 +60,27 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install --require-hashes -r requirements-docs.txt
+      - run: pip install --require-hashes -r requirements/requirements-docs.txt
+
+      # docs/assets/wasm-decode-demo/ is a committed fallback for a local `mkdocs build` (and
+      # this job's own strict build below) - see the deploy job's "Rebuild WASM decode demo"
+      # step for why the *published* site never depends on this staying in sync. But
+      # index.html/demo.js/the favicons have no reason to differ from apps/wasm/ at all -
+      # they are plain copies (see apps/wasm/CMakeLists.txt's POST_BUILD step), not
+      # Emscripten output, so nothing here needs the toolchain this job deliberately doesn't
+      # install. ac3forge_decode.js/.wasm are the genuine build artifacts and have no
+      # source-tree counterpart to diff against, so they're not part of this check.
+      - name: Check WASM demo fallback is in sync with apps/wasm/
+        run: |
+          set -euo pipefail
+          status=0
+          for f in index.html demo.js favicon.svg favicon-32.png assets/demo.ec3; do
+            if ! cmp -s "apps/wasm/$f" "docs/assets/wasm-decode-demo/$f"; then
+              echo "::error file=docs/assets/wasm-decode-demo/$f::Out of sync with apps/wasm/$f - re-copy it (see docs/platforms/wasm.md)."
+              status=1
+            fi
+          done
+          exit "$status"
 
       - run: mkdocs build --strict
 
@@ -86,9 +106,9 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install --require-hashes -r requirements-docs.txt
+      - run: pip install --require-hashes -r requirements/requirements-docs.txt
 
-      # Rebuilds the WASM decode demo (platform/wasm, roadmap F3) fresh and
+      # Rebuilds the WASM decode demo (apps/wasm, roadmap F3) fresh and
       # overwrites the committed docs/assets/wasm-decode-demo/ copy before
       # `mkdocs gh-deploy` runs its own `mkdocs build` internally - so what
       # actually gets published always reflects current source, not

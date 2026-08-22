@@ -103,10 +103,10 @@ misaligning them against the one still catching up.
 | `mpegts::mpegts` | A standalone MPEG-2 Transport Stream muxer (PAT + PMT + one PES-wrapped elementary stream), identifying AC-3/E-AC-3 per DVB's ETSI EN 300 468 Annex D descriptors. Links nothing from `ac3::forge` beyond the AC-3/E-AC-3 choice it is told. |
 | `ac3adm::ac3adm` | A standalone BW64/RF64 + Audio Definition Model reader (container and metadata parsing; object/bed mapping onto `ac3::oba::AtmosEncoder` is not wired up yet). Parses the container (ITU-R BS.2088-1) and the ADM XML graph (ITU-R BS.2076-2) on top of the vendored libbw64/libadm (github.com/ebu); links nothing from `ac3::forge` and knows nothing about AC-3. Opt-in (`-DAC3FORGE_BUILD_ADM=ON`, needs Boost) — the one component in this project with a third-party dependency. |
 | `mp4::fragment` + `mp4/hls.hpp` + `mp4/dash.hpp` | Fragmented MP4/CMAF segmenting (init segment + media segments, ISO/IEC 14496-12 §8.8 / ISO/IEC 23000-19) plus HLS media/master playlist and DASH `AdaptationSet` signaling helpers for the same segments — correct `CODECS`/`codecs` (RFC 6381) and, for Dolby Atmos, HLS's `CHANNELS="<N>/JOC"` (Apple's HLS Authoring Specification). `ac3cli fmp4` wraps the whole thing. |
-| `ac3::sinks::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the caveats below). |
-| `ac3::capture` | Live input/loopback capture — WASAPI on Windows, ALSA on Linux, CoreAudio on macOS (input only, no loopback) — through a lock-free SPSC ring. |
-| `ac3::sinks::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux, CoreAudio on macOS, JNI-bridged `AudioTrack` on Android. See the caveats below (Windows and Android hardware-confirmed; the ALSA and CoreAudio backends are not). |
-| `ac3::sinks::MonitorSink` | Shared-mode PCM playback — WASAPI, ALSA or CoreAudio: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real Windows hardware. |
+| `ac3::iec61937` | S/PDIF burst packing: AC-3 byte-exact against FFmpeg's `spdif` muxer; E-AC-3 (`Eac3BurstPacker`) verified against FFmpeg's `spdif_header_eac3` and Microsoft's own IEC 61937 documentation (both independently fetched, not recalled — see the caveats below). |
+| `ac3::audio` | Live input/loopback capture — WASAPI on Windows, ALSA on Linux, CoreAudio on macOS (input only, no loopback) — through a lock-free SPSC ring. |
+| `ac3::audio::PassthroughSink` | Exclusive-mode/direct bitstream output, AC-3 or E-AC-3 — WASAPI on Windows, ALSA on Linux, CoreAudio on macOS, JNI-bridged `AudioTrack` on Android. See the caveats below (Windows and Android hardware-confirmed; the ALSA and CoreAudio backends are not). |
+| `ac3::audio::MonitorSink` | Shared-mode PCM playback — WASAPI, ALSA or CoreAudio: a non-bitstreamed preview/monitor path that decodes what is being encoded and plays it back on an ordinary output. Confirmed against real Windows hardware. |
 | `ac3::analysis` | Peak/RMS metering with console ballistics, and the Gerzon energy vector over the BS.775 ring. |
 | `ac3::meta::qc` | Bitstream-aware loudness QC (`ac3cli qc`): decodes a stream, measures it with the real BS.1770-4/EBU Tech 3342 meter, and compares against the stream's own embedded `dialnorm`/`compr` and, optionally, a named delivery-spec gate — EBU R 128 s2, ATSC A/85, or Netflix's Sound Mix Specifications, each preset's target/tolerance/true-peak ceiling cited from its own primary source. |
 
@@ -140,7 +140,7 @@ load-bearing enough to flag up front:
 
 Enhanced coupling and transient pre-noise processing have no external decode oracle at all —
 not even the FFmpeg-can't-but-the-in-repo-decoder-can situation 7.1.4 is in, since FFmpeg's own
-Annex E parser has never read either tool's syntax — so `tools/quality_race.py`'s CI gate scores
+Annex E parser has never read either tool's syntax — so `tools/ci/quality_race.py`'s CI gate scores
 both through this project's own decoder instead (see
 [Validation](verification.md#where-the-oracles-dont-reach)). Transient pre-noise processing's
 one-frame decoder buffering is an API characteristic, not a gap; [Decoding](library/decoding.md)

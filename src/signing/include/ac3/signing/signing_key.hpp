@@ -16,12 +16,14 @@
 #include <string_view>
 #include <vector>
 
+#include "ac3/signing/export.hpp"
+
 namespace ac3::signing {
 
 // Owns the key bytes and zeroizes them on destruction, so a supplied key does
 // not linger in freed heap after signing finishes. Copyable/movable; every
 // copy scrubs its own bytes when it dies.
-class SigningKey {
+class AC3SIGNING_EXPORT SigningKey {
 public:
     SigningKey() = default;
     explicit SigningKey(std::vector<std::byte> bytes);
@@ -63,7 +65,8 @@ struct KeyLoadError {
 // asset - decodes identically to the CLI. Hex is deliberately not a format: a
 // hex string is itself valid base64, so the two cannot be auto-distinguished.
 // See docs/concepts/object-signing.md.
-[[nodiscard]] std::optional<SigningKey> decode_signing_key(std::span<const std::byte> content);
+[[nodiscard]] AC3SIGNING_EXPORT std::optional<SigningKey> decode_signing_key(
+    std::span<const std::byte> content);
 
 // Resolves a key from, in order: `explicit_path` if non-empty (the CLI's
 // signing-key= option), then $AC3FORGE_SIGNING_KEY_FILE (a path), then
@@ -72,7 +75,7 @@ struct KeyLoadError {
 // a key without a persisted file while the file form stays the documented
 // default (a value passed inline shows up in `ps`/shell history; a path does
 // not).
-[[nodiscard]] std::expected<SigningKey, KeyLoadError> load_signing_key(
+[[nodiscard]] AC3SIGNING_EXPORT std::expected<SigningKey, KeyLoadError> load_signing_key(
     std::string_view explicit_path);
 
 }  // namespace ac3::signing
