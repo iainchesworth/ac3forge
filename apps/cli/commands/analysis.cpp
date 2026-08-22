@@ -10,10 +10,13 @@
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../support.hpp"
 #include "ac3/analysis/levels.hpp"
+#include "ac3/core/eac3_tables.hpp"
+#include "ac3/core/tables.hpp"
 #include "ac3/decoder/decoder.hpp"
 #include "ac3/io/wav.hpp"
 #include "ac3/meta/drc.hpp"
