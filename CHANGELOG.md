@@ -89,6 +89,12 @@ See [docs/releasing.md](docs/releasing.md) for how releases and version numbers 
   nothing.
 - Fixed a stale anchor in `docs/platforms/raspberry-pi.md` pointing at a `linux.md` heading whose
   text no longer matches.
+- Fixed `docs/library/index.md` and `docs/releasing.md`'s vcpkg port sections, which still blamed
+  `ac3::forge_c`'s absence from the port on the installed-export-set bug fixed above — the port
+  has always passed `-DAC3FORGE_BUILD_CAPI=OFF` regardless of that bug and continues to now that
+  it's gone, as a deliberate scope decision pending a `capi` feature. Verified with a real
+  `vcpkg install ac3forge --overlay-ports=packaging/vcpkg-port` that the port still installs no
+  `ac3::forge_c` artifacts today.
 
 ### Changed
 
