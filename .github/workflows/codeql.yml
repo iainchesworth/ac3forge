@@ -93,6 +93,13 @@ jobs:
         with:
           languages: cpp
           build-mode: manual
+          # TRIAL (this branch only): the security-and-quality suite adds
+          # CodeQL's maintainability/reliability queries on top of the
+          # default security set - the same rule layer GitHub's paid Code
+          # Quality product runs, which doesn't support C++ anyway. This
+          # dispatch-only run measures the finding count before deciding
+          # whether the suite earns a place on develop.
+          queries: security-and-quality
 
       - name: Configure
         run: cmake --preset config-linux-gcc
