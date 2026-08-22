@@ -200,11 +200,12 @@ jobs:
     # a genuine hang anywhere in the job, known or not-yet-known.
     timeout-minutes: 90
 
-    # Ubuntu 26.04 for the Linux legs, where the distro archive carries gcc-15
-    # and LLVM 21 outright. This is a pin, not a convenience: on ubuntu-latest
-    # (24.04 at the time of writing) the LLVM script has to fall back to
-    # apt.llvm.org, whose noble repo is missing clang-tidy-21, lld-21 and
-    # libc++-21-dev, so the install fails before a single file is compiled.
+    # Ubuntu 26.04 for the Linux legs, where the distro archive carries
+    # gcc-16 (universe component - 02-gcc-toolchain.sh enables it) and LLVM 21
+    # outright. This is a pin, not a convenience: on ubuntu-latest (24.04 at
+    # the time of writing) the LLVM script has to fall back to apt.llvm.org,
+    # whose noble repo is missing clang-tidy-21, lld-21 and libc++-21-dev, so
+    # the install fails before a single file is compiled.
     # Pinning the container also stops a runner-image bump silently changing
     # the compiler under the matrix. Empty for the Windows/macOS legs, which
     # run directly on the host runner.
@@ -405,7 +406,7 @@ jobs:
       # asserts its own resulting version and exits non-zero on drift.
       # `sudo` is absent in the container (already root) and required on the
       # host runners, hence the probe rather than a hardcoded prefix.
-      - name: Install GCC 15
+      - name: Install GCC 16
         if: matrix.gcc
         run: |
           set -eu
